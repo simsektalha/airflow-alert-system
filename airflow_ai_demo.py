@@ -13,9 +13,14 @@ Env vars required:
 - AIRFLOW_BASE_URL (e.g., http://localhost:8080)
 - AIRFLOW_USERNAME (e.g., admin)
 - AIRFLOW_PASSWORD (e.g., admin)
-- LLM_BASE_URL (your external LLM API base, e.g., https://llm.your.org/v1)
-- LLM_API_KEY (your external LLM API key)
-- LLM_MODEL (default: gpt-4o-mini)
+- LLM_PROVIDER (openailike | ollama)  [default: openailike]
+- If LLM_PROVIDER=openailike:
+  - LLM_BASE_URL (your external LLM API base, e.g., https://llm.your.org/v1)
+  - LLM_API_KEY (your external LLM API key)
+  - LLM_MODEL (default: gpt-4o-mini)
+- If LLM_PROVIDER=ollama:
+  - OLLAMA_BASE_URL (e.g., http://localhost:11434)
+  - LLM_MODEL (e.g., llama3.1, qwen2.5, mistral)
 
 Usage:
   python airflow_ai_demo.py --max-dags 10 --max-runs 5 --include-logs
@@ -39,9 +44,11 @@ AIRFLOW_BASE_URL = os.getenv("AIRFLOW_BASE_URL", "http://localhost:8080")
 AIRFLOW_USERNAME = os.getenv("AIRFLOW_USERNAME", "admin")
 AIRFLOW_PASSWORD = os.getenv("AIRFLOW_PASSWORD", "admin")
 
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openailike").lower()
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
 # fallback: some Airflow APIs return datetimes ending in Z (Zulu)
 
@@ -109,21 +116,38 @@ class AirflowClient:
 
 
 # ----------------------------
-# Agent (Agno + external LLM)
+# Agent (Agno + provider switch)
 # ----------------------------
 
 def build_agent() -> Agent:
-    if not LLM_BASE_URL or not LLM_API_KEY:
-        print("LLM_BASE_URL and LLM_API_KEY must be set in the environment.")
-        sys.exit(1)
+    provider = LLM_PROVIDER
 
-    model = OpenAIChat(
-        id=LLM_MODEL,
-        api_key=LLM_API_KEY,
-        base_url=LLM_BASE_URL,  # external cluster
-        temperature=0.2,
-        max_tokens=1200,
-    )
+    if provider == "ollama":
+        try:
+            from agno.models.ollama import Ollama
+        except Exception as e:
+            print("Could not import Ollama model from agno. Please ensure your agno version supports Ollama.")
+            sys.exit(1)
+
+        model = Ollama(
+            id=LLM_MODEL,               # e.g., "llama3.1" or "qwen2.5"
+            base_url=OLLAMA_BASE_URL,    # default http://localhost:11434
+            temperature=0.2,
+            max_tokens=1200,
+        )
+    else:
+        # Default: OpenAI-compatible (openai-like) server
+        if not LLM_BASE_URL or not LLM_API_KEY:
+            print("LLM_BASE_URL and LLM_API_KEY must be set for openai-like provider.")
+            sys.exit(1)
+
+        model = OpenAIChat(
+            id=LLM_MODEL,
+            api_key=LLM_API_KEY,
+            base_url=LLM_BASE_URL,  # external OpenAI-compatible cluster
+            temperature=0.2,
+            max_tokens=1200,
+        )
 
     return Agent(
         model=model,
@@ -273,11 +297,13 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
 
-    # Basic env guardrails for external LLM cluster preference
-    if not LLM_BASE_URL or not LLM_API_KEY:
-        print(
-            "Missing LLM_BASE_URL or LLM_API_KEY. Please export them in your environment."
-        )
-        sys.exit(1)
+    # Basic env guardrails for chosen provider
+    if LLM_PROVIDER == "ollama":
+        # No API key required; assume local or remote Ollama server
+        pass
+    else:
+        if not LLM_BASE_URL or not LLM_API_KEY:
+            print("Missing LLM_BASE_URL or LLM_API_KEY. Please export them for openai-like provider.")
+            sys.exit(1)
 
     asyncio.run(run_demo(args.max_dags, args.max_runs, args.include_logs))
