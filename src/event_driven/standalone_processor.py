@@ -67,7 +67,7 @@ async def test_task_failure_processing(
 
 async def main() -> None:
     """Main function for testing the event-driven system."""
-    if len(sys.argv) < 4:
+    if len(sys.argv) < 2:
         print("Usage:")
         print("  python -m src.event_driven.standalone_processor dag <dag_id> <dag_run_id>")
         print("  python -m src.event_driven.standalone_processor task <dag_id> <dag_run_id> <task_id> [try_number]")
@@ -77,10 +77,10 @@ async def main() -> None:
     
     # Validate arguments based on mode
     if mode == "dag" and len(sys.argv) < 4:
-        print("Error: 'dag' mode requires at least 3 arguments: dag_id, dag_run_id")
+        print("Error: 'dag' mode requires at least 4 arguments: script_name, mode, dag_id, dag_run_id")
         sys.exit(1)
     elif mode == "task" and len(sys.argv) < 5:
-        print("Error: 'task' mode requires at least 4 arguments: dag_id, dag_run_id, task_id")
+        print("Error: 'task' mode requires at least 5 arguments: script_name, mode, dag_id, dag_run_id, task_id")
         sys.exit(1)
     elif mode not in ["dag", "task"]:
         print(f"Error: Unknown mode '{mode}'. Supported modes: dag, task")
