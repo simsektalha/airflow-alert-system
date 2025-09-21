@@ -75,6 +75,17 @@ async def main() -> None:
     
     mode = sys.argv[1]
     
+    # Validate arguments based on mode
+    if mode == "dag" and len(sys.argv) < 4:
+        print("Error: 'dag' mode requires at least 3 arguments: dag_id, dag_run_id")
+        sys.exit(1)
+    elif mode == "task" and len(sys.argv) < 5:
+        print("Error: 'task' mode requires at least 4 arguments: dag_id, dag_run_id, task_id")
+        sys.exit(1)
+    elif mode not in ["dag", "task"]:
+        print(f"Error: Unknown mode '{mode}'. Supported modes: dag, task")
+        sys.exit(1)
+    
     try:
         config = AlertConfig()
         config.validate()
@@ -91,9 +102,6 @@ async def main() -> None:
             try_number = int(sys.argv[5]) if len(sys.argv) > 5 else 1
             await test_task_failure_processing(dag_id, dag_run_id, task_id, try_number, config)
             
-        else:
-            print(f"Unknown mode: {mode}")
-            sys.exit(1)
             
     except Exception as e:
         logger.error(f"Error in main: {e}", exc_info=True)
