@@ -48,7 +48,7 @@ class FailureCallbackHandler:
             logger.info(f"DAG failure detected: {dag_id} - {dag_run_id}")
             
             # Trigger async processing
-            asyncio.create_task(
+            asyncio.run(
                 self.processor.process_dag_failure(
                     dag_id=dag_id,
                     dag_run_id=dag_run_id,
@@ -81,7 +81,7 @@ class FailureCallbackHandler:
             logger.info(f"Task failure detected: {dag_id}.{task_id} (run: {dag_run_id}, try: {try_number})")
             
             # Trigger async processing
-            asyncio.create_task(
+            asyncio.run(
                 self.processor.process_task_failure(
                     dag_id=dag_id,
                     dag_run_id=dag_run_id,
