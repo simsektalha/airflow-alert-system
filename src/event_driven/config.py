@@ -37,6 +37,19 @@ class AlertConfig:
             ollama_base_url: Ollama server base URL (for ollama provider).
             output_file: Optional file path to write analysis results.
         """
+        # Track which values were explicitly provided
+        self._explicit_values = {
+            'airflow_base_url': airflow_base_url is not None,
+            'airflow_username': airflow_username is not None,
+            'airflow_password': airflow_password is not None,
+            'llm_provider': llm_provider is not None,
+            'llm_base_url': llm_base_url is not None,
+            'llm_api_key': llm_api_key is not None,
+            'llm_model': llm_model is not None,
+            'ollama_base_url': ollama_base_url is not None,
+            'output_file': output_file is not None,
+        }
+        
         # Airflow configuration
         self.airflow_base_url = (
             airflow_base_url or 
@@ -87,23 +100,25 @@ class AlertConfig:
         Raises:
             ValueError: If required configuration is missing or invalid.
         """
-        # Check if we're using default values that indicate missing configuration
-        if self.airflow_base_url == "http://localhost:8080" and not os.getenv("AIRFLOW_BASE_URL"):
+        # Only validate Airflow config if not explicitly provided and no env var set
+        if not self._explicit_values['airflow_base_url'] and not os.getenv("AIRFLOW_BASE_URL"):
             raise ValueError("AIRFLOW_BASE_URL is required - please set environment variable or pass explicitly")
         
-        if self.airflow_username == "admin" and not os.getenv("AIRFLOW_USERNAME"):
+        if not self._explicit_values['airflow_username'] and not os.getenv("AIRFLOW_USERNAME"):
             raise ValueError("AIRFLOW_USERNAME is required - please set environment variable or pass explicitly")
         
-        if self.airflow_password == "admin" and not os.getenv("AIRFLOW_PASSWORD"):
+        if not self._explicit_values['airflow_password'] and not os.getenv("AIRFLOW_PASSWORD"):
             raise ValueError("AIRFLOW_PASSWORD is required - please set environment variable or pass explicitly")
         
+        # Validate LLM configuration based on provider
         if self.llm_provider == "openailike":
             if not self.llm_base_url or self.llm_base_url == "":
                 raise ValueError("LLM_BASE_URL is required for openailike provider")
             if not self.llm_api_key or self.llm_api_key == "":
                 raise ValueError("LLM_API_KEY is required for openailike provider")
         elif self.llm_provider == "ollama":
-            if self.ollama_base_url == "http://localhost:11434" and not os.getenv("OLLAMA_BASE_URL"):
+            # Only validate Ollama URL if not explicitly provided and no env var set
+            if not self._explicit_values['ollama_base_url'] and not os.getenv("OLLAMA_BASE_URL"):
                 raise ValueError("OLLAMA_BASE_URL is required for ollama provider - please set environment variable or pass explicitly")
         else:
             raise ValueError(f"Invalid LLM_PROVIDER: {self.llm_provider}. Must be 'openailike' or 'ollama'")
