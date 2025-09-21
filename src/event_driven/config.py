@@ -87,23 +87,24 @@ class AlertConfig:
         Raises:
             ValueError: If required configuration is missing or invalid.
         """
-        if not self.airflow_base_url:
-            raise ValueError("AIRFLOW_BASE_URL is required")
+        # Check if we're using default values that indicate missing configuration
+        if self.airflow_base_url == "http://localhost:8080" and not os.getenv("AIRFLOW_BASE_URL"):
+            raise ValueError("AIRFLOW_BASE_URL is required - please set environment variable or pass explicitly")
         
-        if not self.airflow_username:
-            raise ValueError("AIRFLOW_USERNAME is required")
+        if self.airflow_username == "admin" and not os.getenv("AIRFLOW_USERNAME"):
+            raise ValueError("AIRFLOW_USERNAME is required - please set environment variable or pass explicitly")
         
-        if not self.airflow_password:
-            raise ValueError("AIRFLOW_PASSWORD is required")
+        if self.airflow_password == "admin" and not os.getenv("AIRFLOW_PASSWORD"):
+            raise ValueError("AIRFLOW_PASSWORD is required - please set environment variable or pass explicitly")
         
         if self.llm_provider == "openailike":
-            if not self.llm_base_url:
+            if not self.llm_base_url or self.llm_base_url == "":
                 raise ValueError("LLM_BASE_URL is required for openailike provider")
-            if not self.llm_api_key:
+            if not self.llm_api_key or self.llm_api_key == "":
                 raise ValueError("LLM_API_KEY is required for openailike provider")
         elif self.llm_provider == "ollama":
-            if not self.ollama_base_url:
-                raise ValueError("OLLAMA_BASE_URL is required for ollama provider")
+            if self.ollama_base_url == "http://localhost:11434" and not os.getenv("OLLAMA_BASE_URL"):
+                raise ValueError("OLLAMA_BASE_URL is required for ollama provider - please set environment variable or pass explicitly")
         else:
             raise ValueError(f"Invalid LLM_PROVIDER: {self.llm_provider}. Must be 'openailike' or 'ollama'")
     
