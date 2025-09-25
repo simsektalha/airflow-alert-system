@@ -15,6 +15,9 @@ import requests
 from src.event_driven.callbacks import create_dag_failure_callback, create_task_failure_callback
 from src.event_driven.config import AlertConfig
 
+# Import unified configuration
+from production.unified_config import create_unified_config
+
 LOG = logging.getLogger(__name__)
 if not LOG.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -64,24 +67,37 @@ def _get_current_try_number_via_api(base_url, auth_user, auth_pass, verify, time
 
 def on_failure_trigger_fetcher(context):
     """
-    Enhanced Airflow task on_failure_callback with Agent Teams integration:
-    - First tries Agent Teams analysis (modern approach)
+    Enhanced Airflow task on_failure_callback with unified configuration:
+    - Uses unified configuration to determine best analysis method
+    - Tries Agent Teams first if available and configured
     - Falls back to legacy system if Agent Teams fails
     - Maintains backward compatibility with existing configuration
     """
-    # Try Agent Teams first
-    try:
-        config = AlertConfig()
-        config.validate()
-        task_callback = create_task_failure_callback(config)
-        LOG.info("Using Agent Teams for failure analysis")
-        task_callback(context)
-        return
-    except Exception as e:
-        LOG.warning(f"Agent Teams failed: {e}, falling back to legacy system")
+    # Load unified configuration
+    unified_config = create_unified_config(use_agent_teams=True)
+    
+    # Log configuration summary
+    config_summary = unified_config.get_config_summary()
+    LOG.info(f"Configuration summary: {config_summary}")
+    
+    # Try Agent Teams first if available
+    if unified_config.is_agent_teams_available():
+        try:
+            agent_config = unified_config.get_agent_config()
+            if agent_config:
+                task_callback = create_task_failure_callback(agent_config)
+                LOG.info("Using Agent Teams for failure analysis")
+                task_callback(context)
+                return
+        except Exception as e:
+            LOG.warning(f"Agent Teams failed: {e}, falling back to legacy system")
     
     # Fallback to legacy system
-    _legacy_failure_handler(context)
+    if unified_config.is_legacy_available():
+        LOG.info("Using legacy system for failure analysis")
+        _legacy_failure_handler(context)
+    else:
+        LOG.error("No analysis method available - both Agent Teams and legacy systems failed")
 
 
 def _legacy_failure_handler(context):
