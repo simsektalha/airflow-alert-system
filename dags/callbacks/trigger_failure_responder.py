@@ -129,10 +129,6 @@ def on_failure_trigger_fetcher(context):
     # Path to your responder script; override via config.script_path if needed
     script_path = cfg.get("script_path") or "/usr/local/airflow/dags/airflow_failure_responder.py"
 
-    # Extra args for responder (e.g., --out), overridable in config.responder_args
-    responder_args = list(cfg.get("responder_args") or [])
-    if not any(a == "--out" or str(a).startswith("--out=") for a in responder_args):
-        responder_args += ["--out", "/tmp/failed_task_log.json"]
 
     # Pass entire config as base64 to the script (no env vars required)
     cfg_b64 = base64.b64encode(json.dumps(cfg).encode("utf-8")).decode("ascii")
@@ -154,7 +150,7 @@ def on_failure_trigger_fetcher(context):
         "--dag-run-id", run_id,
         "--task-id", task_id,
         "--try-number", str(try_number_for_log),
-    ] + responder_args
+    ]
 
     # Safe logs (no secrets)
     LOG.info("[invoke] python=%s", python_exec)
