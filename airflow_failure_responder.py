@@ -369,6 +369,18 @@ def setup_pdf_knowledge_base(cfg: Dict[str, Any]) -> Optional["PDFKnowledgeBase"
                 model=embedder_config.get("model", "nomic-embed-text")
             )
             LOG.info("[pdf] Using Ollama embedder: %s", embedder_config.get("model", "nomic-embed-text"))
+        elif embedder_type == "custom" and embedder_config.get("base_url"):
+            # Custom embedder for GPU cluster
+            embedder = OpenAIEmbedder(
+                api_key=embedder_config.get("api_key", "dummy-key"),  # Some endpoints don't require auth
+                base_url=embedder_config["base_url"],
+                model=embedder_config.get("model", "embedding"),
+                headers=embedder_config.get("headers", {}),
+                timeout=embedder_config.get("timeout", 30)
+            )
+            LOG.info("[pdf] Using custom GPU cluster embedder: %s at %s", 
+                    embedder_config.get("model", "embedding"), 
+                    embedder_config["base_url"])
         
         # Create PDF knowledge base with hybrid search
         pdf_kb = PDFKnowledgeBase(
