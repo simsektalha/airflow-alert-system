@@ -1,6 +1,6 @@
 # Airflow AI-Powered Failure Callbacks - Production
 
-This repository contains your production Airflow AI failure callback system.
+An enterprise-grade Airflow failure analysis system that leverages AI-powered teams to automatically diagnose, analyze, and provide actionable insights for failed DAG tasks. This production-ready solution integrates seamlessly with Airflow's callback system to deliver intelligent root cause analysis, automated fix recommendations, and multi-channel notifications.
 
 ## 📁 **Project Structure**
 
