@@ -45,6 +45,14 @@ class AgenticFailureProcessor:
                 self.agents["fix_planner"],
                 self.agents["verifier"],
             ],
+            model=model,
+            instructions=[
+                "Collaborate to analyze an Airflow failure end-to-end.",
+                "Process: 1) LogIngestor summarizes logs, 2) RootCauseAnalyst infers cause with confidence, 3) FixPlanner drafts concrete steps + prevention, 4) Verifier validates and outputs final report.",
+                "Only the Verifier should produce the final consolidated output.",
+            ],
+            show_members_responses=True,
+            markdown=True,
         )
     
     def _build_agents(self) -> Dict[str, Agent]:
@@ -255,48 +263,8 @@ class AgenticFailureProcessor:
         except Exception as e:
             logger.error(f"Error generating analysis: {e}", exc_info=True)
     
-    def _build_analysis_prompt(self, failure_info: Dict[str, Any]) -> str:
-        """Build the prompt for AI analysis.
-        
-        Args:
-            failure_info: Dictionary containing failure details.
-            
-        Returns:
-            Formatted prompt string.
-        """
-        lines = [
-            "# Airflow Failure Analysis",
-            f"**DAG:** {failure_info['dag_id']}",
-            f"**Run ID:** {failure_info['dag_run_id']}",
-            f"**Timestamp:** {failure_info['timestamp']}",
-            "",
-            "## Failed Tasks:",
-            ""
-        ]
-        
-        for i, task in enumerate(failure_info['failed_tasks'], 1):
-            lines.extend([
-                f"### {i}. Task: {task['task_id']} (Try: {task['try_number']})",
-                f"**State:** {task['state']}",
-                "",
-                "**Logs:**",
-                "```log",
-                task['log_snippet'],
-                "```",
-                ""
-            ])
-        
-        lines.extend([
-            "## Analysis Request:",
-            "Please provide:",
-            "1. **Root Cause:** Brief explanation of what likely caused the failure",
-            "2. **Fix Steps:** Numbered list of concrete actions to resolve the issue",
-            "3. **Prevention Tips:** Bullet points for preventing similar failures",
-            "",
-            "Keep the analysis concise and actionable."
-        ])
-        
-        return "\n".join(lines)
+    # The single-agent prompt builder is intentionally removed from the active path
+    # to enforce Team-based collaboration.
     
     async def _run_team_collaboration(self, failure_info: Dict[str, Any]) -> str:
         """Run the Agno Team to collaboratively analyze the failure.
@@ -348,115 +316,7 @@ class AgenticFailureProcessor:
         response = await self.team.arun(prompt)
         return response.content
 
-    async def _ingest_logs(self, failure_info: Dict[str, Any]) -> str:
-        """Use LogIngestor to summarize failed task logs.
-        
-        Args:
-            failure_info: Failure payload containing task log snippets.
-        
-        Returns:
-            Concise log summary string.
-        """
-        lines: List[str] = [
-            "# Raw Log Snippets",
-        ]
-        for task in failure_info.get("failed_tasks", []):
-            lines.extend([
-                f"## Task: {task['task_id']} (Try: {task['try_number']})",
-                "```log",
-                task.get("log_snippet", ""),
-                "```",
-            ])
-
-        prompt = "\n".join(lines + [
-            "\nSummarize the logs focusing on errors, stack traces, failing operators, retries, and timings."
-        ])
-        resp = await self.agents["log_ingestor"].arun(prompt)
-        return resp.content
-
-    async def _analyze_root_cause(self, failure_info: Dict[str, Any], log_summary: str) -> str:
-        """Use RootCauseAnalyst to produce a concise root cause.
-        
-        Args:
-            failure_info: Failure context.
-            log_summary: Output from log ingestion.
-        
-        Returns:
-            Root cause narrative with confidence.
-        """
-        context = [
-            f"DAG: {failure_info['dag_id']}",
-            f"Run: {failure_info['dag_run_id']}",
-            f"When: {failure_info['timestamp']}",
-            "",
-            "## Log Summary",
-            log_summary,
-        ]
-        resp = await self.agents["root_cause_analyst"].arun("\n".join(context))
-        return resp.content
-
-    async def _plan_fixes(self, failure_info: Dict[str, Any], log_summary: str, rca: str) -> str:
-        """Use FixPlanner to generate concrete steps and prevention tips.
-        
-        Args:
-            failure_info: Failure context.
-            log_summary: Summarized logs.
-            rca: Root-cause analysis text.
-        
-        Returns:
-            Actionable plan text.
-        """
-        prompt = "\n".join([
-            f"DAG: {failure_info['dag_id']} | Run: {failure_info['dag_run_id']}",
-            "",
-            "## Root Cause",
-            rca,
-            "",
-            "## Log Summary",
-            log_summary,
-            "",
-            "Produce numbered Fix Steps (3-7) and Prevention Tips (3-5)."
-        ])
-        resp = await self.agents["fix_planner"].arun(prompt)
-        return resp.content
-
-    async def _verify_and_format(
-        self,
-        failure_info: Dict[str, Any],
-        log_summary: str,
-        rca: str,
-        plan: str,
-    ) -> str:
-        """Use Verifier to validate and compose the final report.
-        
-        Args:
-            failure_info: Failure context.
-            log_summary: Summarized logs.
-            rca: Root-cause analysis text.
-            plan: Fix plan text.
-        
-        Returns:
-            Final formatted report string.
-        """
-        prompt = "\n".join([
-            f"DAG: {failure_info['dag_id']} | Run: {failure_info['dag_run_id']} | Time: {failure_info['timestamp']}",
-            "",
-            "## Log Summary",
-            log_summary,
-            "",
-            "## Root Cause (candidate)",
-            rca,
-            "",
-            "## Plan (candidate)",
-            plan,
-            "",
-            "Verify consistency. If risky or inconsistent, adjust. Output final:",
-            "- Root cause (<= 5 lines)",
-            "- Fix steps (numbered)",
-            "- Prevention tips (bullets)",
-        ])
-        resp = await self.agents["verifier"].arun(prompt)
-        return resp.content
+    # Removed step-by-step helper methods to avoid sequential, non-Team execution.
 
     async def _handle_analysis_result(
         self,
