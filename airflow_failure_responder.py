@@ -38,6 +38,7 @@ import base64
 import codecs
 import json
 import logging
+import os
 import re
 import sys
 import time
@@ -79,6 +80,16 @@ try:
     from agno.models.ollama import Ollama
 except Exception:
     Ollama = None  # type: ignore
+
+try:
+    from agno.knowledge.pdf import PDFKnowledgeBase, PDFReader
+    from agno.vectordb.pgvector import PgVector
+    from agno.vectordb.chroma import Chroma
+except Exception:
+    PDFKnowledgeBase = None
+    PDFReader = None
+    PgVector = None
+    Chroma = None
 
 
 # ---------- Redaction ----------
@@ -296,6 +307,62 @@ Return ONLY a single JSON object with EXACTLY these keys:
 - Do NOT wrap in markdown; output raw JSON only.
 """.strip()
 
+def setup_pdf_knowledge_base(cfg: Dict[str, Any]) -> Optional["PDFKnowledgeBase"]:
+    """Set up PDF knowledge base from configuration."""
+    if PDFKnowledgeBase is None or PDFReader is None:
+        LOG.info("[pdf] PDF knowledge base not available; skipping")
+        return None
+    
+    pdf_config = cfg.get("pdf_knowledge", {})
+    pdf_path = pdf_config.get("path")
+    
+    if not pdf_path:
+        LOG.info("[pdf] No PDF path configured; skipping knowledge base")
+        return None
+    
+    if not os.path.exists(pdf_path):
+        LOG.warning("[pdf] PDF file not found: %s", pdf_path)
+        return None
+    
+    try:
+        # Configure vector database
+        vector_db_config = pdf_config.get("vector_db", {})
+        vector_db_type = vector_db_config.get("type", "chroma")
+        
+        vector_db = None
+        if vector_db_type == "pgvector" and PgVector:
+            vector_db = PgVector(
+                table_name=vector_db_config.get("table_name", "pdf_documents"),
+                db_url=vector_db_config.get("db_url", "postgresql+psycopg://ai:ai@localhost:5532/ai"),
+            )
+        elif vector_db_type == "chroma" and Chroma:
+            vector_db = Chroma(
+                collection_name=vector_db_config.get("collection_name", "pdf_documents"),
+                persist_directory=vector_db_config.get("persist_directory", "./chroma_db"),
+            )
+        
+        if vector_db is None:
+            LOG.warning("[pdf] No vector database configured; using default Chroma")
+            vector_db = Chroma(collection_name="pdf_documents", persist_directory="./chroma_db")
+        
+        # Create PDF knowledge base
+        pdf_kb = PDFKnowledgeBase(
+            path=pdf_path,
+            vector_db=vector_db,
+            reader=PDFReader(chunk=True),
+        )
+        
+        # Load the knowledge base
+        LOG.info("[pdf] Loading PDF knowledge base from: %s", pdf_path)
+        pdf_kb.load(recreate=pdf_config.get("recreate", False))
+        
+        LOG.info("[pdf] PDF knowledge base loaded successfully")
+        return pdf_kb
+        
+    except Exception as e:
+        LOG.exception("[pdf] Failed to setup PDF knowledge base: %s", e)
+        return None
+
 def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
     """Build a Team for collaborative failure analysis."""
     if Agent is None or Team is None:
@@ -332,6 +399,11 @@ def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
         LOG.info("[llm] not configured or driver unavailable; skipping Team")
         return None
 
+    # Set up PDF knowledge base
+    pdf_kb = setup_pdf_knowledge_base(cfg)
+    if pdf_kb:
+        LOG.info("[pdf] PDF knowledge base available for agents")
+
     # Create specialized agents for the team
     log_ingestor = Agent(
         model=model,
@@ -342,6 +414,8 @@ def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
             "Focus on the most critical error messages and their context.",
             "Output only the distilled summary (maximum 15 lines).",
         ],
+        knowledge=pdf_kb,
+        search_knowledge=True,
         markdown=True,
     )
 
@@ -352,10 +426,13 @@ def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
             "You are an expert in Apache Airflow and data engineering root-cause analysis.",
             "Given DAG context and a log summary, identify the most likely root cause of the failure.",
             "Consider common Airflow failure patterns: dependency issues, configuration problems, resource constraints, network issues, and code errors.",
+            "Use the knowledge base to find similar problems and solutions from past experiences.",
             "Call out assumptions and missing context explicitly.",
             "Provide a confidence score (0-1) for your analysis.",
             "Output a short paragraph explaining the root cause and your confidence level.",
         ],
+        knowledge=pdf_kb,
+        search_knowledge=True,
         markdown=True,
     )
 
@@ -365,11 +442,14 @@ def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
         instructions=[
             "You are a solutions architect specializing in Airflow failure remediation.",
             "Given a root cause analysis, produce concrete, minimal-risk fix steps for Airflow failures.",
+            "Use the knowledge base to find proven solutions and best practices for similar problems.",
             "Return a numbered list of 3-7 actionable steps that can be executed immediately.",
             "Include 3-5 prevention tips to avoid similar failures in the future.",
             "Prefer configuration changes, code fixes, and operational improvements that are realistically applicable.",
             "Consider both immediate fixes and long-term improvements.",
         ],
+        knowledge=pdf_kb,
+        search_knowledge=True,
         markdown=True,
     )
 
@@ -379,10 +459,13 @@ def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
         instructions=[
             "You are a quality assurance specialist for failure analysis.",
             "Verify that the root cause analysis and fix plan are consistent with the log summary.",
+            "Use the knowledge base to validate solutions against proven best practices.",
             "Check for logical consistency, completeness, and feasibility of the proposed solutions.",
             "If something seems off or incomplete, propose a safer alternative plan.",
             "Output a final, concise report with: Root cause, Fix steps, Prevention tips, and Overall assessment.",
         ],
+        knowledge=pdf_kb,
+        search_knowledge=True,
         markdown=True,
     )
 

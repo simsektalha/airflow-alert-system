@@ -60,6 +60,15 @@ Set up the `v_callback_fetch_failed_task` Airflow Variable with your configurati
         "teams_webhook": "https://api.powerplatform.com/...",
         "teams_verify_ssl": false
     },
+    "pdf_knowledge": {
+        "path": "/path/to/Problem_Solutions.pdf",
+        "vector_db": {
+            "type": "chroma",
+            "collection_name": "pdf_documents",
+            "persist_directory": "./chroma_db"
+        },
+        "recreate": false
+    },
     "script_path": "/path/to/airflow/dags/airflow_failure_responder.py",
     "invoke": {
         "mode": "detach",
@@ -115,6 +124,27 @@ with DAG(
   }
   ```
 
+### PDF Knowledge Base
+- **path**: Path to your Problem_Solutions.pdf file
+- **vector_db**: Vector database configuration
+  - **type**: `"chroma"` (default) or `"pgvector"`
+  - **collection_name**: Collection name for document storage
+  - **persist_directory**: Directory to persist Chroma database
+- **recreate**: Whether to recreate the knowledge base (default: false)
+
+**Example with PgVector:**
+```json
+"pdf_knowledge": {
+  "path": "/path/to/Problem_Solutions.pdf",
+  "vector_db": {
+    "type": "pgvector",
+    "table_name": "pdf_documents",
+    "db_url": "postgresql+psycopg://ai:ai@localhost:5532/ai"
+  },
+  "recreate": false
+}
+```
+
 ### Script Execution
 - **Mode**: `"detach"` (background) or `"run"` (blocking)
 - **Timeout**: Maximum execution time in seconds
@@ -140,6 +170,7 @@ All other settings (log processing, output paths, etc.) are configured via the A
   - **RootCauseAnalyst**: Expert root cause identification with confidence scoring
   - **FixPlanner**: Concrete fix steps and prevention measures
   - **Verifier**: Quality assurance and final report validation
+- **PDF Knowledge Base**: Integrates custom Problem_Solutions.pdf for enhanced problem-solving
 - **Teams Integration**: Sends notifications to Microsoft Teams
 - **Configurable**: Flexible configuration via Airflow Variables
 - **Robust Error Handling**: Fallback mechanisms and retry logic
