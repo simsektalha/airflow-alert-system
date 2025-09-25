@@ -23,6 +23,12 @@ Optional config keys (inside the single JSON from --config-b64):
       "api_key": "sk-...",
       // if driver == "ollama"
       "host": "http://localhost:11434"
+    },
+    "output": {
+      "method": "stdout" | "file" | "teams",
+      "file_path": "/tmp/failed_task_log.json",  // for file output
+      "teams_webhook": "https://api.powerplatform.com/...",  // for teams output
+      "teams_verify_ssl": false  // for teams SSL verification
     }
 }
 """
@@ -651,6 +657,62 @@ def _create_heuristic_analysis(error_summary: str) -> Dict[str, Any]:
     }
 
 
+def output_to_stdout(result: Dict[str, Any]) -> None:
+    """Output analysis result to stdout.
+    
+    Args:
+        result: Analysis result dictionary.
+    """
+    try:
+        output_json = json.dumps(result, indent=2, ensure_ascii=False)
+        print("=== AIRFLOW FAILURE ANALYSIS ===")
+        print(output_json)
+        print("================================")
+        LOG.info("[stdout] Analysis output sent to stdout (size=%d)", len(output_json))
+    except Exception as e:
+        LOG.error(f"[stdout] Failed to output to stdout: {e}")
+        raise
+
+
+def output_to_file(result: Dict[str, Any], file_path: str) -> None:
+    """Output analysis result to file.
+    
+    Args:
+        result: Analysis result dictionary.
+        file_path: Path to output file.
+    """
+    try:
+        output_json = json.dumps(result, indent=2, ensure_ascii=False)
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(output_json)
+        LOG.info("[file] Analysis written to %s (size=%d)", file_path, len(output_json))
+    except Exception as e:
+        LOG.error(f"[file] Failed to write to file {file_path}: {e}")
+        raise
+
+
+def output_to_teams(result: Dict[str, Any], webhook_url: str, verify_ssl: bool = False) -> None:
+    """Output analysis result to Microsoft Teams.
+    
+    Args:
+        result: Analysis result dictionary.
+        webhook_url: Teams webhook URL.
+        verify_ssl: Whether to verify SSL certificates.
+    """
+    try:
+        headers = {"Content-Type": "application/json"}
+        payload = build_teams_payload(result)
+        resp = requests.post(webhook_url, headers=headers, json=payload, verify=verify_ssl)
+        LOG.info("[teams] Status code: %s", resp.status_code)
+        LOG.info("[teams] Response: %s", resp.text)
+        
+        if resp.status_code >= 400:
+            LOG.warning("[teams] Teams notification may have failed: %s", resp.text)
+    except Exception as e:
+        LOG.error(f"[teams] Failed to send to Teams: {e}")
+        raise
+
+
 # ---------- CLI ----------
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Fetch a failed task's log, parse/redact, analyze with LLM, and emit JSON.")
@@ -964,20 +1026,32 @@ async def main_async() -> None:
         "analysis": analysis,
     }
 
+    # 5) Output based on configuration
     try:
-        # out_json = json.dumps(result, indent=2, ensure_ascii=False)
-        # with open(args.out, "w", encoding="utf-8") as f:
-        #     f.write(out_json)
-        # LOG.info("[out] wrote analysis JSON to %s (size=%d)", args.out, len(out_json))
-
-        headers = {"Content-Type": "application/json"}
-        payload = build_teams_payload(result)
-        resp = requests.post("https://api.powerplatform.com:443/powerautomate/automations/direct/workflows/7ebb98a66e91457e8e577c22ac04fbeb/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=PLNpbAWZA09gLDc_xVQFrNwLktibjBKUk0g6HbBURc0", headers=headers, json=payload, verify=False)
-        LOG.info("[Notify] Status code: %s", resp.status_code)
-        LOG.info("[Notify] Response: %s", resp.text)
+        output_config = cfg.get("output", {})
+        output_method = output_config.get("method", "teams")  # Default to teams for backward compatibility
+        
+        LOG.info("[output] Using output method: %s", output_method)
+        
+        if output_method == "stdout":
+            output_to_stdout(result)
+        elif output_method == "file":
+            file_path = output_config.get("file_path", args.out)
+            output_to_file(result, file_path)
+        elif output_method == "teams":
+            webhook_url = output_config.get("teams_webhook", 
+                "https://api.powerplatform.com:443/powerautomate/automations/direct/workflows/7ebb98a66e91457e8e577c22ac04fbeb/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=PLNpbAWZA09gLDc_xVQFrNwLktibjBKUk0g6HbBURc0")
+            verify_ssl = output_config.get("teams_verify_ssl", False)
+            output_to_teams(result, webhook_url, verify_ssl)
+        else:
+            LOG.warning("[output] Unknown output method '%s', falling back to teams", output_method)
+            output_to_teams(result, 
+                "https://api.powerplatform.com:443/powerautomate/automations/direct/workflows/7ebb98a66e91457e8e577c22ac04fbeb/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=PLNpbAWZA09gLDc_xVQFrNwLktibjBKUk0g6HbBURc0", 
+                False)
+            
     except Exception as e:
-        LOG.exception("Failed to write output file")
-        raise SystemExit(f"Failed to write output file: {e}")
+        LOG.exception("Failed to output analysis result")
+        raise SystemExit(f"Failed to output analysis result: {e}")
 
 if __name__ == "__main__":
     try:

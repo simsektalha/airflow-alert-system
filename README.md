@@ -54,6 +54,12 @@ Set up the `v_callback_fetch_failed_task` Airflow Variable with your configurati
         "temperature": 0.1,
         "max_tokens": 800
     },
+    "output": {
+        "method": "teams",
+        "file_path": "/tmp/failed_task_log.json",
+        "teams_webhook": "https://api.powerplatform.com/...",
+        "teams_verify_ssl": false
+    },
     "script_path": "/path/to/airflow/dags/airflow_failure_responder.py",
     "responder_args": ["--out", "/tmp/failed_task_log.json"],
     "invoke": {
@@ -86,6 +92,29 @@ with DAG(
 - **OpenAI-like**: Set `driver: "openai_like"` with `base_url` and `api_key`
 - **Ollama**: Set `driver: "ollama"` with `host: "http://localhost:11434"`
 - **vLLM**: Set `driver: "vllm"` with `base_url`
+
+### Output Methods
+- **stdout**: Output analysis to console/logs
+  ```json
+  "output": {
+    "method": "stdout"
+  }
+  ```
+- **file**: Save analysis to JSON file
+  ```json
+  "output": {
+    "method": "file",
+    "file_path": "/tmp/failed_task_log.json"
+  }
+  ```
+- **teams**: Send Teams notification (default)
+  ```json
+  "output": {
+    "method": "teams",
+    "teams_webhook": "https://api.powerplatform.com/...",
+    "teams_verify_ssl": false
+  }
+  ```
 
 ### Script Execution
 - **Mode**: `"detach"` (background) or `"run"` (blocking)
