@@ -5,7 +5,7 @@ This repository contains your production Airflow AI failure callback system.
 ## 📁 **Project Structure**
 
 ```
-production/
+airflow-alert-system/
 ├── airflow_failure_responder.py          # Main failure responder script
 └── dags/
     ├── callbacks/
@@ -19,13 +19,13 @@ production/
 Copy the files to your Airflow environment:
 ```bash
 # Copy responder script
-cp production/airflow_failure_responder.py /path/to/airflow/dags/
+cp airflow_failure_responder.py /path/to/airflow/dags/
 
 # Copy callback
-cp production/dags/callbacks/trigger_failure_responder.py /path/to/airflow/dags/callbacks/
+cp dags/callbacks/trigger_failure_responder.py /path/to/airflow/dags/callbacks/
 
 # Copy example DAG
-cp production/dags/example.py /path/to/airflow/dags/
+cp dags/example.py /path/to/airflow/dags/
 ```
 
 ### 2. Configure Airflow Variable
@@ -119,6 +119,17 @@ with DAG(
 - **Mode**: `"detach"` (background) or `"run"` (blocking)
 - **Timeout**: Maximum execution time in seconds
 - **Python**: Custom Python interpreter path
+
+### Script Arguments
+The responder script takes only the required arguments passed by the callback:
+- `--log-url`: Airflow logs API endpoint
+- `--config-b64`: Base64-encoded configuration
+- `--dag-id`: DAG identifier
+- `--dag-run-id`: DAG run identifier
+- `--task-id`: Task identifier
+- `--try-number`: Task try number
+
+All other settings (log processing, output paths, etc.) are configured via the Airflow Variable.
 
 ## 📊 **Features**
 
