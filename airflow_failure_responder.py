@@ -722,7 +722,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dag-run-id", required=True)
     p.add_argument("--task-id", required=True)
     p.add_argument("--try-number", type=int, required=True)
-    p.add_argument("--out", required=True, help="Path to write the final JSON file.")
+    p.add_argument("--out", help="Path to write the final JSON file (optional, used only if output method is 'file').")
     p.add_argument("--tail-lines", type=int, default=160, help="How many tail lines to preserve in context.")
     p.add_argument("--max-log-chars", type=int, default=1800, help="Max characters for the saved log tail.")
     return p.parse_args()
@@ -1029,25 +1029,33 @@ async def main_async() -> None:
     # 5) Output based on configuration
     try:
         output_config = cfg.get("output", {})
-        output_method = output_config.get("method", "teams")  # Default to teams for backward compatibility
+        output_method = output_config.get("method", "stdout")  # Default to stdout
         
         LOG.info("[output] Using output method: %s", output_method)
         
         if output_method == "stdout":
             output_to_stdout(result)
         elif output_method == "file":
-            file_path = output_config.get("file_path", args.out)
+            file_path = output_config.get("file_path")
+            if not file_path:
+                if args.out:
+                    file_path = args.out
+                else:
+                    file_path = "/tmp/failed_task_log.json"
+                    LOG.warning("[output] No file_path specified, using default: %s", file_path)
             output_to_file(result, file_path)
         elif output_method == "teams":
-            webhook_url = output_config.get("teams_webhook", 
-                "https://api.powerplatform.com:443/powerautomate/automations/direct/workflows/7ebb98a66e91457e8e577c22ac04fbeb/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=PLNpbAWZA09gLDc_xVQFrNwLktibjBKUk0g6HbBURc0")
-            verify_ssl = output_config.get("teams_verify_ssl", False)
-            output_to_teams(result, webhook_url, verify_ssl)
+            webhook_url = output_config.get("teams_webhook")
+            if not webhook_url:
+                LOG.error("[output] Teams output method requires 'teams_webhook' in configuration")
+                LOG.info("[output] Falling back to stdout")
+                output_to_stdout(result)
+            else:
+                verify_ssl = output_config.get("teams_verify_ssl", False)
+                output_to_teams(result, webhook_url, verify_ssl)
         else:
-            LOG.warning("[output] Unknown output method '%s', falling back to teams", output_method)
-            output_to_teams(result, 
-                "https://api.powerplatform.com:443/powerautomate/automations/direct/workflows/7ebb98a66e91457e8e577c22ac04fbeb/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=PLNpbAWZA09gLDc_xVQFrNwLktibjBKUk0g6HbBURc0", 
-                False)
+            LOG.warning("[output] Unknown output method '%s', falling back to stdout", output_method)
+            output_to_stdout(result)
             
     except Exception as e:
         LOG.exception("Failed to output analysis result")

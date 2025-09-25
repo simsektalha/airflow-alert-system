@@ -55,7 +55,7 @@ Set up the `v_callback_fetch_failed_task` Airflow Variable with your configurati
         "max_tokens": 800
     },
     "output": {
-        "method": "teams",
+        "method": "stdout",
         "file_path": "/tmp/failed_task_log.json",
         "teams_webhook": "https://api.powerplatform.com/...",
         "teams_verify_ssl": false
@@ -94,7 +94,7 @@ with DAG(
 - **vLLM**: Set `driver: "vllm"` with `base_url`
 
 ### Output Methods
-- **stdout**: Output analysis to console/logs
+- **stdout**: Output analysis to console/logs (default)
   ```json
   "output": {
     "method": "stdout"
@@ -107,7 +107,7 @@ with DAG(
     "file_path": "/tmp/failed_task_log.json"
   }
   ```
-- **teams**: Send Teams notification (default)
+- **teams**: Send Teams notification
   ```json
   "output": {
     "method": "teams",
