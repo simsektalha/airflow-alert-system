@@ -722,8 +722,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dag-run-id", required=True)
     p.add_argument("--task-id", required=True)
     p.add_argument("--try-number", type=int, required=True)
-    p.add_argument("--tail-lines", type=int, default=160, help="How many tail lines to preserve in context.")
-    p.add_argument("--max-log-chars", type=int, default=1800, help="Max characters for the saved log tail.")
     return p.parse_args()
 
 
@@ -881,7 +879,11 @@ async def main_async() -> None:
     LOG.info("[parse] full_log_len=%d (%.2fs)", len(full_log), time.time() - t_fetch)
 
     # 2) Redact + extract
-    log_tail_redacted = redact_text(full_log, tail_lines=args.tail_lines, max_len=args.max_log_chars)
+    # Get log processing settings from configuration
+    tail_lines = cfg.get("log_processing", {}).get("tail_lines", 160)
+    max_log_chars = cfg.get("log_processing", {}).get("max_log_chars", 1800)
+    
+    log_tail_redacted = redact_text(full_log, tail_lines=tail_lines, max_len=max_log_chars)
     LOG.info("[parse] tail_len=%d", len(log_tail_redacted))
     error_focus_raw, error_summary = extract_error_focus(full_log)
     LOG.info("[parse] error_focus_len=%d summary=%s", len(error_focus_raw), error_summary[:160].replace("\n"," "))

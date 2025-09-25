@@ -60,6 +60,10 @@ Set up the `v_callback_fetch_failed_task` Airflow Variable with your configurati
         "teams_webhook": "https://api.powerplatform.com/...",
         "teams_verify_ssl": false
     },
+    "log_processing": {
+        "tail_lines": 160,
+        "max_log_chars": 1800
+    },
     "script_path": "/path/to/airflow/dags/airflow_failure_responder.py",
     "invoke": {
         "mode": "detach",
@@ -114,6 +118,10 @@ with DAG(
     "teams_verify_ssl": false
   }
   ```
+
+### Log Processing
+- **tail_lines**: Number of tail lines to preserve in context (default: 160)
+- **max_log_chars**: Maximum characters for the saved log tail (default: 1800)
 
 ### Script Execution
 - **Mode**: `"detach"` (background) or `"run"` (blocking)
