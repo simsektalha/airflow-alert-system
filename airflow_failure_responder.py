@@ -1,37 +1,3 @@
-"""
-Pipeline:
-    1) Read all config from --config-b64 (single Airflow Variable JSON). No env vars.
-    2) Fetch ONE task attempt log from --log-url (Airflow v1 Logs endpoint).
-    3) Parse & redact logs; extract error-focused slices.
-    4) Send to LLM (if configured) with strict JSON schema; fallback to heuristics.
-    5) Write final JSON to --out.
-
-Optional config keys (inside the single JSON from --config-b64):
-{
-    "base_url": "https://airflow.example.com:8080",
-    "auth": { "basic": { "username": "user", "password": "pass" } },
-    "tls": { "verify": true },  // or a path string to CA bundle
-    "timeouts": { "connect": 10.0, "total": 30.0 },
-    "pagination": { "max_pages": 200, "max_bytes": 5000000 },
-    "llm": {
-      "driver": "openai_like" | "ollama",
-      "model": "gpt-4o-mini",
-      "max_tokens": 800,
-      "temperature": 0.1,
-      // if driver == "openai_like"
-      "base_url": "https://your-gateway/v1",
-      "api_key": "sk-...",
-      // if driver == "ollama"
-      "host": "http://localhost:11434"
-    },
-    "output": {
-      "method": "stdout" | "file" | "teams",
-      "file_path": "/tmp/failed_task_log.json",  // for file output
-      "teams_webhook": "https://api.powerplatform.com/...",  // for teams output
-      "teams_verify_ssl": false  // for teams SSL verification
-    }
-}
-"""
 import argparse
 import asyncio
 import base64
