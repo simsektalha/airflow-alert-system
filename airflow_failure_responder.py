@@ -827,7 +827,7 @@ def build_teams_payload(log):
 # ---------- Main ----------
 async def main_async() -> None:
     args = parse_args()
-    LOG.info("[start] dag_id=%s run_id=%s task_id=%s try=%s out=%s", args.dag_id, args.dag_run_id, args.task_id, args.try_number, args.out)
+    LOG.info("[start] dag_id=%s run_id=%s task_id=%s try=%s", args.dag_id, args.dag_run_id, args.task_id, args.try_number)
 
     # Decode single Airflow Variable JSON
     try:
