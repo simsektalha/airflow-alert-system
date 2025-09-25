@@ -1,290 +1,87 @@
-# Airflow AI-Powered Failure Callbacks - Production
+# Airflow AI-Powered Failure Analysis System
 
-An enterprise-grade Airflow failure analysis system that leverages AI-powered teams to automatically diagnose, analyze, and provide actionable insights for failed DAG tasks. This production-ready solution integrates seamlessly with Airflow's callback system to deliver intelligent root cause analysis, automated fix recommendations, and multi-channel notifications.
+An enterprise-grade Airflow failure analysis system that leverages AI-powered teams to automatically diagnose, analyze, and provide actionable insights for failed DAG tasks through intelligent root cause analysis, automated fix recommendations, and multi-channel notifications.
 
-## 📁 **Project Structure**
+## 🚀 Quick Start
 
-```
-airflow-alert-system/
-├── airflow_failure_responder.py          # Main failure responder script
-└── dags/
-    ├── callbacks/
-    │   └── trigger_failure_responder.py  # Airflow callback function
-    └── example.py                        # Example DAG with failure scenarios
-```
-
-## 🚀 **Usage**
-
-### 1. Deploy to Airflow
-Copy the files to your Airflow environment:
+### 1. Deploy
 ```bash
-# Copy responder script
 cp airflow_failure_responder.py /path/to/airflow/dags/
-
-# Copy callback
 cp dags/callbacks/trigger_failure_responder.py /path/to/airflow/dags/callbacks/
-
-# Copy example DAG
 cp dags/example.py /path/to/airflow/dags/
 ```
 
-### 2. Configure Airflow Variable
-Set up the `v_callback_fetch_failed_task` Airflow Variable with your configuration:
+### 2. Configure
+Set up the `v_callback_fetch_failed_task` Airflow Variable:
 ```json
 {
-    "base_url": "https://your-airflow-instance:8080",
-    "auth": {
-        "basic": {
-            "username": "your-username",
-            "password": "your-password"
-        }
-    },
-    "tls": {
-        "verify": true
-    },
-    "timeouts": {
-        "connect": 10.0,
-        "total": 30.0
-    },
-    "llm": {
-        "driver": "openai_like",
-        "model": "gpt-4o-mini",
-        "base_url": "https://api.openai.com/v1",
-        "api_key": "your-api-key",
-        "temperature": 0.1,
-        "max_tokens": 800
-    },
-    "output": {
-        "method": "stdout",
-        "file_path": "/tmp/failed_task_log.json",
-        "teams_webhook": "https://api.powerplatform.com/...",
-        "teams_verify_ssl": false
-    },
-    "pdf_knowledge": {
-        "path": "/path/to/Problem_Solutions.pdf",
-        "vector_db": {
-            "type": "chroma",
-            "collection_name": "pdf_documents",
-            "persist_directory": "./chroma_db"
-        },
-        "embedder": {
-            "type": "openai",
-            "api_key": "your-embedder-api-key",
-            "base_url": "https://api.openai.com/v1",
-            "model": "text-embedding-3-small"
-        },
-        "recreate": false,
-        "upsert": true,
-        "async_load": false
-    },
-    "script_path": "/path/to/airflow/dags/airflow_failure_responder.py",
-    "invoke": {
-        "mode": "detach",
-        "timeout_sec": 30
-    }
+  "base_url": "https://your-airflow-instance:8080",
+  "auth": { "basic": { "username": "user", "password": "pass" } },
+  "llm": {
+    "driver": "openai_like",
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "your-api-key",
+    "model": "gpt-4o-mini"
+  },
+  "output": { "method": "stdout" }
 }
 ```
 
-### 3. Use in Your DAGs
+### 3. Use
 ```python
 from callbacks.trigger_failure_responder import on_failure_trigger_fetcher
 
 default_args = {
     "on_failure_callback": on_failure_trigger_fetcher,
 }
-
-with DAG(
-    "my_dag",
-    default_args=default_args,
-    # ... other DAG parameters
-) as dag:
-    # Your tasks here
-    pass
 ```
 
-## 🔧 **Configuration Options**
+## 📊 Features
 
-### LLM Providers
-- **OpenAI-like**: Set `driver: "openai_like"` with `base_url` and `api_key`
-- **Ollama**: Set `driver: "ollama"` with `host: "http://localhost:11434"`
-- **vLLM**: Set `driver: "vllm"` with `base_url`
+- **🤖 AI Team Analysis**: Collaborative AI agents for enhanced root cause analysis
+- **📄 PDF Knowledge Base**: Integrates custom Problem_Solutions.pdf for proven solutions
+- **🔍 Hybrid Search**: Advanced vector search with multiple embedder options
+- **📤 Multi-Channel Output**: stdout, file, or Microsoft Teams notifications
+- **⚡ Event-Driven**: Automatic failure detection via Airflow callbacks
+- **🔧 Configurable**: Flexible configuration via Airflow Variables
 
-### Output Methods
-- **stdout**: Output analysis to console/logs (default)
-  ```json
-  "output": {
-    "method": "stdout"
-  }
-  ```
-- **file**: Save analysis to JSON file
-  ```json
-  "output": {
-    "method": "file",
-    "file_path": "/tmp/failed_task_log.json"
-  }
-  ```
-- **teams**: Send Teams notification
-  ```json
-  "output": {
-    "method": "teams",
-    "teams_webhook": "https://api.powerplatform.com/...",
-    "teams_verify_ssl": false
-  }
-  ```
+## 📁 Project Structure
 
-### PDF Knowledge Base
-- **path**: Path to your Problem_Solutions.pdf file
-- **vector_db**: Vector database configuration
-  - **type**: `"chroma"` (default) or `"pgvector"`
-  - **collection_name**: Collection name for document storage
-  - **persist_directory**: Directory to persist Chroma database
-- **embedder**: Embedding model configuration
-  - **type**: `"openai"` (default), `"ollama"`, or `"custom"`
-  - **api_key**: API key for OpenAI embedder (optional for custom)
-  - **base_url**: Base URL for embedder API
-  - **model**: Embedding model name
-  - **headers**: Custom headers for custom embedder (optional)
-  - **timeout**: Request timeout in seconds (optional)
-- **recreate**: Whether to recreate the knowledge base (default: false)
-- **upsert**: Whether to update existing documents (default: true)
-- **async_load**: Whether to load asynchronously (default: false)
-
-**Example with PgVector:**
-```json
-"pdf_knowledge": {
-  "path": "/path/to/Problem_Solutions.pdf",
-  "vector_db": {
-    "type": "pgvector",
-    "table_name": "pdf_documents",
-    "db_url": "postgresql+psycopg://ai:ai@localhost:5532/ai"
-  },
-  "embedder": {
-    "type": "openai",
-    "api_key": "your-api-key",
-    "model": "text-embedding-3-small"
-  },
-  "recreate": false,
-  "upsert": true
-}
+```
+airflow-alert-system/
+├── airflow_failure_responder.py          # Main failure responder script
+├── dags/
+│   ├── callbacks/
+│   │   └── trigger_failure_responder.py  # Airflow callback function
+│   └── example.py                        # Example DAG with failure scenarios
+├── docs/                                 # Detailed documentation
+│   ├── CONFIGURATION.md                  # Complete configuration guide
+│   ├── PDF_INTEGRATION.md               # PDF knowledge base setup
+│   └── GPU_CLUSTER.md                   # GPU cluster embedder guide
+└── README.md                            # This file
 ```
 
-**Example with Ollama Embedder:**
-```json
-"pdf_knowledge": {
-  "path": "/path/to/Problem_Solutions.pdf",
-  "vector_db": {
-    "type": "chroma",
-    "collection_name": "pdf_documents",
-    "persist_directory": "./chroma_db"
-  },
-  "embedder": {
-    "type": "ollama",
-    "host": "http://localhost:11434",
-    "model": "nomic-embed-text"
-  },
-  "recreate": false,
-  "upsert": true,
-  "async_load": true
-}
-```
+## 🔧 Configuration
 
-**Example with Custom GPU Cluster Embedder:**
-```json
-"pdf_knowledge": {
-  "path": "/path/to/Problem_Solutions.pdf",
-  "vector_db": {
-    "type": "chroma",
-    "collection_name": "pdf_documents",
-    "persist_directory": "./chroma_db"
-  },
-  "embedder": {
-    "type": "custom",
-    "base_url": "http://your-gpu-cluster:8000/v1",
-    "model": "your-embedding-model",
-    "api_key": "your-api-key",
-    "headers": {
-      "Authorization": "Bearer your-token",
-      "X-Custom-Header": "value"
-    },
-    "timeout": 60
-  },
-  "recreate": false,
-  "upsert": true,
-  "async_load": true
-}
-```
+### Basic Configuration
+- **LLM Providers**: OpenAI, Ollama, vLLM, Custom GPU clusters
+- **Output Methods**: stdout, file, Microsoft Teams
+- **PDF Knowledge**: Custom Problem_Solutions.pdf integration
+- **Vector Databases**: Chroma, PgVector
 
-### GPU Cluster Embedder Setup
+### Advanced Features
+- **Hybrid Search**: Combines vector and keyword search
+- **Custom Embedders**: GPU cluster embedding models
+- **Async Loading**: Non-blocking PDF processing
+- **Upsert Support**: Incremental knowledge base updates
 
-For custom GPU cluster embedding models, ensure your endpoint follows OpenAI-compatible API format:
+## 📚 Documentation
 
-**Required Endpoint Format:**
-```
-POST /v1/embeddings
-Content-Type: application/json
-Authorization: Bearer your-api-key
+- **[Configuration Guide](docs/CONFIGURATION.md)** - Complete configuration options
+- **[PDF Integration](docs/PDF_INTEGRATION.md)** - PDF knowledge base setup
+- **[GPU Cluster Setup](docs/GPU_CLUSTER.md)** - Custom embedder configuration
 
-{
-  "input": "text to embed",
-  "model": "your-embedding-model"
-}
-```
-
-**Response Format:**
-```json
-{
-  "data": [
-    {
-      "embedding": [0.1, 0.2, 0.3, ...],
-      "index": 0
-    }
-  ],
-  "model": "your-embedding-model",
-  "usage": {
-    "prompt_tokens": 10,
-    "total_tokens": 10
-  }
-}
-```
-
-**Popular GPU Cluster Solutions:**
-- **vLLM**: High-performance LLM serving with embedding support
-- **TGI (Text Generation Inference)**: Hugging Face's inference server
-- **Custom FastAPI**: Your own embedding service
-- **Kubernetes**: Deploy embedding models at scale
-
-### Script Execution
-- **Mode**: `"detach"` (background) or `"run"` (blocking)
-- **Timeout**: Maximum execution time in seconds
-- **Python**: Custom Python interpreter path
-
-### Script Arguments
-The responder script takes only the required arguments passed by the callback:
-- `--log-url`: Airflow logs API endpoint
-- `--config-b64`: Base64-encoded configuration
-- `--dag-id`: DAG identifier
-- `--dag-run-id`: DAG run identifier
-- `--task-id`: Task identifier
-- `--try-number`: Task try number
-
-All other settings (log processing, output paths, etc.) are configured via the Airflow Variable.
-
-## 📊 **Features**
-
-- **Automatic Failure Detection**: Triggers on DAG/task failures
-- **Log Analysis**: Fetches and analyzes Airflow task logs
-- **AI Team Analysis**: Uses collaborative AI team for enhanced root cause analysis
-  - **LogIngestor**: Specialized log analysis and summarization
-  - **RootCauseAnalyst**: Expert root cause identification with confidence scoring
-  - **FixPlanner**: Concrete fix steps and prevention measures
-  - **Verifier**: Quality assurance and final report validation
-- **PDF Knowledge Base**: Integrates custom Problem_Solutions.pdf for enhanced problem-solving
-- **Teams Integration**: Sends notifications to Microsoft Teams
-- **Configurable**: Flexible configuration via Airflow Variables
-- **Robust Error Handling**: Fallback mechanisms and retry logic
-- **Collaborative Intelligence**: Multiple AI agents work together for better analysis
-
-## 🧪 **Testing**
+## 🧪 Testing
 
 Use the example DAG to test the system:
 ```python
@@ -292,12 +89,12 @@ Use the example DAG to test the system:
 # Trigger it manually to test the failure callback system
 ```
 
-## 📞 **Support**
+## 📞 Support
 
 - Check Airflow logs for callback execution
 - Verify Airflow Variable configuration
 - Test with the provided example DAG
-- Monitor Teams notifications
+- Monitor output notifications
 
 ---
 
