@@ -61,7 +61,7 @@ Set up the `v_callback_fetch_failed_task` Airflow Variable with your configurati
         "teams_verify_ssl": false
     },
     "script_path": "/path/to/airflow/dags/airflow_failure_responder.py",
-    "responder_args": ["--out", "/tmp/failed_task_log.json"],
+    "responder_args": [],
     "invoke": {
         "mode": "detach",
         "timeout_sec": 30

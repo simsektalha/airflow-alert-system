@@ -722,7 +722,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dag-run-id", required=True)
     p.add_argument("--task-id", required=True)
     p.add_argument("--try-number", type=int, required=True)
-    p.add_argument("--out", help="Path to write the final JSON file (optional, used only if output method is 'file').")
     p.add_argument("--tail-lines", type=int, default=160, help="How many tail lines to preserve in context.")
     p.add_argument("--max-log-chars", type=int, default=1800, help="Max characters for the saved log tail.")
     return p.parse_args()
@@ -1029,7 +1028,7 @@ async def main_async() -> None:
     # 5) Output based on configuration
     try:
         output_config = cfg.get("output", {})
-        output_method = output_config.get("method", "stdout")  # Default to stdout
+        output_method = output_config.get("method", "stdout") 
         
         LOG.info("[output] Using output method: %s", output_method)
         
@@ -1038,11 +1037,8 @@ async def main_async() -> None:
         elif output_method == "file":
             file_path = output_config.get("file_path")
             if not file_path:
-                if args.out:
-                    file_path = args.out
-                else:
-                    file_path = "/tmp/failed_task_log.json"
-                    LOG.warning("[output] No file_path specified, using default: %s", file_path)
+                file_path = "/tmp/failed_task_log.json"
+                LOG.warning("[output] No file_path specified, using default: %s", file_path)
             output_to_file(result, file_path)
         elif output_method == "teams":
             webhook_url = output_config.get("teams_webhook")
