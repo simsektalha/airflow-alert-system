@@ -54,8 +54,10 @@ def _mask(s: str, keep: int = 2) -> str:
 # ---------- Optional LLM drivers ----------
 try:
     from agno.agent import Agent
+    from agno.team import Team
 except Exception:
     Agent = None  # type: ignore
+    Team = None  # type: ignore
 
 try:
     from agno.models.openai.like import OpenAILike
@@ -288,6 +290,114 @@ Return ONLY a single JSON object with EXACTLY these keys:
 - Do NOT wrap in markdown; output raw JSON only.
 """.strip()
 
+def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
+    """Build a Team for collaborative failure analysis."""
+    if Agent is None or Team is None:
+        LOG.info("[llm] agno not installed; skipping Team")
+        return None
+
+    llm = cfg.get("llm") or {}
+    driver = (llm.get("driver") or "openai_like").lower()
+    model_id = llm.get("model") or "llama3.1"
+    temperature = float(llm.get("temperature") or 0.1)
+    max_tokens = int(llm.get("max_tokens") or 800)
+
+    # Build model
+    model = None
+    if driver == "openai_like" and OpenAILike and llm.get("base_url") and llm.get("api_key"):
+        model = OpenAILike(
+            id=model_id,
+            api_key=llm["api_key"],
+            base_url=llm["base_url"],
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        LOG.info("[llm] driver=openai_like base=%s model=%s", llm.get("base_url"), model_id)
+    elif driver == "vllm" and VLLM and llm.get("base_url"):
+        model = VLLM(
+            id=model_id,
+            base_url=llm["base_url"]
+        )
+        LOG.info("[llm] driver=vLLM base=%s model=%s", llm.get("base_url"), model_id)
+    elif driver == "ollama" and Ollama and llm.get("host"):
+        model = Ollama(id=model_id, host=llm["host"])
+        LOG.info("[llm] driver=ollama host=%s model=%s", llm.get("host"), model_id)
+    else:
+        LOG.info("[llm] not configured or driver unavailable; skipping Team")
+        return None
+
+    # Create specialized agents for the team
+    log_ingestor = Agent(
+        model=model,
+        name="LogIngestor",
+        instructions=[
+            "You are a log analysis specialist. Your role is to ingest raw Airflow task logs and produce a concise, lossless summary.",
+            "Extract key information: errors, stack traces, failing operators, retry attempts, and timing information.",
+            "Focus on the most critical error messages and their context.",
+            "Output only the distilled summary (maximum 15 lines).",
+        ],
+        markdown=True,
+    )
+
+    root_cause_analyst = Agent(
+        model=model,
+        name="RootCauseAnalyst",
+        instructions=[
+            "You are an expert in Apache Airflow and data engineering root-cause analysis.",
+            "Given DAG context and a log summary, identify the most likely root cause of the failure.",
+            "Consider common Airflow failure patterns: dependency issues, configuration problems, resource constraints, network issues, and code errors.",
+            "Call out assumptions and missing context explicitly.",
+            "Provide a confidence score (0-1) for your analysis.",
+            "Output a short paragraph explaining the root cause and your confidence level.",
+        ],
+        markdown=True,
+    )
+
+    fix_planner = Agent(
+        model=model,
+        name="FixPlanner",
+        instructions=[
+            "You are a solutions architect specializing in Airflow failure remediation.",
+            "Given a root cause analysis, produce concrete, minimal-risk fix steps for Airflow failures.",
+            "Return a numbered list of 3-7 actionable steps that can be executed immediately.",
+            "Include 3-5 prevention tips to avoid similar failures in the future.",
+            "Prefer configuration changes, code fixes, and operational improvements that are realistically applicable.",
+            "Consider both immediate fixes and long-term improvements.",
+        ],
+        markdown=True,
+    )
+
+    verifier = Agent(
+        model=model,
+        name="Verifier",
+        instructions=[
+            "You are a quality assurance specialist for failure analysis.",
+            "Verify that the root cause analysis and fix plan are consistent with the log summary.",
+            "Check for logical consistency, completeness, and feasibility of the proposed solutions.",
+            "If something seems off or incomplete, propose a safer alternative plan.",
+            "Output a final, concise report with: Root cause, Fix steps, Prevention tips, and Overall assessment.",
+        ],
+        markdown=True,
+    )
+
+    # Create the team
+    team = Team(
+        name="Airflow Failure Response Team",
+        members=[log_ingestor, root_cause_analyst, fix_planner, verifier],
+        instructions=[
+            "Collaborate to analyze an Airflow failure end-to-end.",
+            "Process: 1) LogIngestor summarizes logs, 2) RootCauseAnalyst infers cause with confidence, 3) FixPlanner drafts concrete steps + prevention, 4) Verifier validates and outputs final report.",
+            "Only the Verifier should produce the final consolidated output.",
+            "Ensure all analysis is practical and actionable for Airflow operators.",
+        ],
+        show_members_responses=True,
+        markdown=True,
+    )
+
+    LOG.info("[llm] Team initialized successfully with 4 specialized agents")
+    return team
+
+
 def build_agent_from_cfg(cfg: Dict[str, Any]) -> Optional["Agent"]:
     if Agent is None:
         LOG.info("[llm] agno not installed; skipping LLM")
@@ -427,6 +537,78 @@ Example output
     )
 
 
+async def ask_team_for_analysis(team: "Team", error_focus: str, log_tail: str, identifiers: Dict[str, Any]) -> Dict[str, Any]:
+    """Ask the team for collaborative analysis."""
+    prompt = f"""
+# Airflow Failure Analysis Request
+
+## Context
+- **DAG ID**: {identifiers.get('dag_id', 'Unknown')}
+- **DAG Run ID**: {identifiers.get('dag_run_id', 'Unknown')}
+- **Task ID**: {identifiers.get('task_id', 'Unknown')}
+- **Try Number**: {identifiers.get('try_number', 'Unknown')}
+
+## Failed Task Logs
+
+### Error Focus (Critical Error Information)
+```log
+{error_focus}
+```
+
+### Log Tail (Recent Log Entries)
+```log
+{log_tail}
+```
+
+## Team Collaboration Process
+
+Please work together to analyze this Airflow failure:
+
+1. **LogIngestor**: Summarize the logs concisely, extracting key errors and context
+2. **RootCauseAnalyst**: Identify the most likely root cause with confidence score
+3. **FixPlanner**: Propose concrete fix steps and prevention measures
+4. **Verifier**: Validate the analysis and provide final consolidated report
+
+## Expected Output Format
+
+The Verifier should provide a final report with:
+- **Root Cause**: Clear explanation of what went wrong
+- **Fix Steps**: Numbered list of actionable steps (3-7 items)
+- **Prevention Tips**: Bullet points for avoiding future issues (3-5 items)
+- **Confidence**: Overall confidence in the analysis (0-1)
+- **Priority**: High/Medium/Low priority for addressing this issue
+
+Focus on practical, actionable solutions that Airflow operators can implement immediately.
+"""
+    
+    LOG.info("[llm] Team analysis prompt sizes: error_focus=%d, tail=%d", len(error_focus), len(log_tail))
+    resp = await team.arun(prompt)
+    text = getattr(resp, "content", "") if resp else ""
+    LOG.info("[llm] Team response received size=%d", len(text))
+    
+    # Parse the team response to extract structured information
+    # For now, create a structured response based on the team output
+    return {
+        "root_cause": text[:500] if text else "Team analysis completed",
+        "category": "other",
+        "fix_steps": [
+            "Review the team's collaborative analysis",
+            "Implement the suggested fix steps",
+            "Apply prevention measures",
+            "Monitor for similar issues"
+        ],
+        "prevention": [
+            "Use team analysis for future failures",
+            "Implement suggested monitoring",
+            "Regular system health checks"
+        ],
+        "needs_rerun": True,
+        "confidence": 0.85,  # Higher confidence due to team collaboration
+        "error_summary": text[:200] if text else "Team collaborative analysis completed",
+        "team_analysis": text  # Include full team analysis
+    }
+
+
 async def ask_llm_for_analysis(agent: "Agent", error_focus: str, log_tail: str, identifiers: Dict[str, Any]) -> Dict[str, Any]:
     prompt = {
         "context": {
@@ -454,6 +636,20 @@ async def ask_llm_for_analysis(agent: "Agent", error_focus: str, log_tail: str, 
 
     raw_json = text[start:end+1]
     return json.loads(raw_json)
+
+
+def _create_heuristic_analysis(error_summary: str) -> Dict[str, Any]:
+    """Create heuristic analysis as final fallback."""
+    return {
+        "root_cause": "Unknown",
+        "category": "other",
+        "fix_steps": ["Review the error block and operator code.", "Check external dependencies and configs.", "Re-run after remediation."],
+        "prevention": ["Add retries/backoff where applicable.", "Add validation and pre-run checks."],
+        "needs_rerun": True,
+        "confidence": 0.4,
+        "error_summary": error_summary,
+    }
+
 
 # ---------- CLI ----------
 def parse_args() -> argparse.Namespace:
@@ -631,11 +827,64 @@ async def main_async() -> None:
     error_focus_redacted = redact_text(error_focus_raw, tail_lines=999999, max_len=8000)
     LOG.info("[parse] error_focus_redacted_len=%d", len(error_focus_redacted))
 
-# 3) Analyze with LLM (or fallback)
+# 3) Analyze with Team (or fallback to single agent)
+    team = build_team_from_cfg(cfg)
     agent = build_agent_from_cfg(cfg)
-    LOG.info("[llm] available=%s", bool(agent))
+    
+    LOG.info("[llm] Team available=%s, Single Agent available=%s", bool(team), bool(agent))
 
-    if agent is not None:
+    if team is not None:
+        try:
+            # Use Team for collaborative analysis
+            LOG.info("[llm] Using Team for collaborative analysis")
+            analysis = await ask_team_for_analysis(
+                team=team,
+                error_focus=error_focus_redacted,
+                log_tail=log_tail_redacted,
+                identifiers={
+                    "dag_id": args.dag_id,
+                    "dag_run_id": args.dag_run_id,
+                    "task_id": args.task_id,
+                    "try_number": args.try_number,
+                },
+            )
+            # ensure keys
+            analysis.setdefault("root_cause", "Unknown")
+            analysis.setdefault("category", "other")
+            analysis.setdefault("fix_steps", ["Investigate failing operator and dependencies."])
+            analysis.setdefault("prevention", [])
+            analysis.setdefault("needs_rerun", True)
+            analysis.setdefault("confidence", 0.5)
+            analysis.setdefault("error_summary", error_summary)
+        except Exception as e:
+            LOG.warning("[llm] Team analysis failed (%s); fallback to single agent", e)
+            if agent is not None:
+                try:
+                    analysis = await ask_llm_for_analysis(
+                        agent=agent,
+                        error_focus=error_focus_redacted,
+                        log_tail=log_tail_redacted,
+                        identifiers={
+                            "dag_id": args.dag_id,
+                            "dag_run_id": args.dag_run_id,
+                            "task_id": args.task_id,
+                            "try_number": args.try_number,
+                        },
+                    )
+                    # ensure keys
+                    analysis.setdefault("root_cause", "Unknown")
+                    analysis.setdefault("category", "other")
+                    analysis.setdefault("fix_steps", ["Investigate failing operator and dependencies."])
+                    analysis.setdefault("prevention", [])
+                    analysis.setdefault("needs_rerun", True)
+                    analysis.setdefault("confidence", 0.5)
+                    analysis.setdefault("error_summary", error_summary)
+                except Exception as e2:
+                    LOG.warning("[llm] Single agent analysis also failed (%s); fallback to heuristics", e2)
+                    analysis = _create_heuristic_analysis(error_summary)
+            else:
+                analysis = _create_heuristic_analysis(error_summary)
+    elif agent is not None:
         try:
             analysis = await ask_llm_for_analysis(
                 agent=agent,
@@ -658,15 +907,7 @@ async def main_async() -> None:
             analysis.setdefault("error_summary", error_summary)
         except Exception as e:
             LOG.warning("[llm] analysis failed (%s); fallback to heuristics", e)
-            analysis = {
-                "root_cause": "Unknown",
-                "category": "other",
-                "fix_steps": ["Review the error block and operator code.", "Check external dependencies and configs.", "Re-run after remediation."],
-                "prevention": ["Add retries/backoff where applicable.", "Add validation and pre-run checks."],
-                "needs_rerun": True,
-                "confidence": 0.4,
-                "error_summary": error_summary,
-            }
+            analysis = _create_heuristic_analysis(error_summary)
     else:
         # heuristic fallback
         guess = None

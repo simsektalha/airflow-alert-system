@@ -96,10 +96,15 @@ with DAG(
 
 - **Automatic Failure Detection**: Triggers on DAG/task failures
 - **Log Analysis**: Fetches and analyzes Airflow task logs
-- **AI-Powered Analysis**: Uses LLM for root cause analysis
+- **AI Team Analysis**: Uses collaborative AI team for enhanced root cause analysis
+  - **LogIngestor**: Specialized log analysis and summarization
+  - **RootCauseAnalyst**: Expert root cause identification with confidence scoring
+  - **FixPlanner**: Concrete fix steps and prevention measures
+  - **Verifier**: Quality assurance and final report validation
 - **Teams Integration**: Sends notifications to Microsoft Teams
 - **Configurable**: Flexible configuration via Airflow Variables
 - **Robust Error Handling**: Fallback mechanisms and retry logic
+- **Collaborative Intelligence**: Multiple AI agents work together for better analysis
 
 ## 🧪 **Testing**
 
