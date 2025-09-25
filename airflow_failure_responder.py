@@ -85,11 +85,17 @@ try:
     from agno.knowledge.pdf import PDFKnowledgeBase, PDFReader
     from agno.vectordb.pgvector import PgVector
     from agno.vectordb.chroma import Chroma
+    from agno.vectordb.base import SearchType
+    from agno.embedder.openai import OpenAIEmbedder
+    from agno.embedder.ollama import OllamaEmbedder
 except Exception:
     PDFKnowledgeBase = None
     PDFReader = None
     PgVector = None
     Chroma = None
+    SearchType = None
+    OpenAIEmbedder = None
+    OllamaEmbedder = None
 
 
 # ---------- Redaction ----------
@@ -345,20 +351,66 @@ def setup_pdf_knowledge_base(cfg: Dict[str, Any]) -> Optional["PDFKnowledgeBase"
             LOG.warning("[pdf] No vector database configured; using default Chroma")
             vector_db = Chroma(collection_name="pdf_documents", persist_directory="./chroma_db")
         
-        # Create PDF knowledge base
+        # Configure embedder
+        embedder_config = pdf_config.get("embedder", {})
+        embedder_type = embedder_config.get("type", "openai")
+        embedder = None
+        
+        if embedder_type == "openai" and OpenAIEmbedder and embedder_config.get("api_key"):
+            embedder = OpenAIEmbedder(
+                api_key=embedder_config["api_key"],
+                base_url=embedder_config.get("base_url", "https://api.openai.com/v1"),
+                model=embedder_config.get("model", "text-embedding-3-small")
+            )
+            LOG.info("[pdf] Using OpenAI embedder: %s", embedder_config.get("model", "text-embedding-3-small"))
+        elif embedder_type == "ollama" and OllamaEmbedder and embedder_config.get("host"):
+            embedder = OllamaEmbedder(
+                host=embedder_config["host"],
+                model=embedder_config.get("model", "nomic-embed-text")
+            )
+            LOG.info("[pdf] Using Ollama embedder: %s", embedder_config.get("model", "nomic-embed-text"))
+        elif embedder_type == "custom" and embedder_config.get("base_url"):
+            # Custom embedder for GPU cluster
+            embedder = OpenAIEmbedder(
+                api_key=embedder_config.get("api_key", "dummy-key"),  # Some endpoints don't require auth
+                base_url=embedder_config["base_url"],
+                model=embedder_config.get("model", "embedding"),
+                headers=embedder_config.get("headers", {}),
+                timeout=embedder_config.get("timeout", 30)
+            )
+            LOG.info("[pdf] Using custom GPU cluster embedder: %s at %s", 
+                    embedder_config.get("model", "embedding"), 
+                    embedder_config["base_url"])
+        
+        # Create PDF knowledge base with hybrid search
         pdf_kb = PDFKnowledgeBase(
             path=pdf_path,
             vector_db=vector_db,
             reader=PDFReader(chunk=True),
+            search_type=SearchType.hybrid if SearchType else None,
+            embedder=embedder,
         )
         
         # Load the knowledge base
         LOG.info("[pdf] Loading PDF knowledge base from: %s", pdf_path)
-        pdf_kb.load(recreate=pdf_config.get("recreate", False))
+        pdf_kb.load(
+            recreate=pdf_config.get("recreate", False),
+            upsert=pdf_config.get("upsert", True),
+            async_load=pdf_config.get("async_load", False)
+        )
         
         LOG.info("[pdf] PDF knowledge base loaded successfully")
         return pdf_kb
         
+    except FileNotFoundError as e:
+        LOG.error("[pdf] PDF file not found: %s", e)
+        return None
+    except PermissionError as e:
+        LOG.error("[pdf] Permission denied accessing PDF file: %s", e)
+        return None
+    except ValueError as e:
+        LOG.error("[pdf] Invalid PDF file or configuration: %s", e)
+        return None
     except Exception as e:
         LOG.exception("[pdf] Failed to setup PDF knowledge base: %s", e)
         return None

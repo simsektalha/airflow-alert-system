@@ -67,7 +67,15 @@ Set up the `v_callback_fetch_failed_task` Airflow Variable with your configurati
             "collection_name": "pdf_documents",
             "persist_directory": "./chroma_db"
         },
-        "recreate": false
+        "embedder": {
+            "type": "openai",
+            "api_key": "your-embedder-api-key",
+            "base_url": "https://api.openai.com/v1",
+            "model": "text-embedding-3-small"
+        },
+        "recreate": false,
+        "upsert": true,
+        "async_load": false
     },
     "script_path": "/path/to/airflow/dags/airflow_failure_responder.py",
     "invoke": {
@@ -130,7 +138,16 @@ with DAG(
   - **type**: `"chroma"` (default) or `"pgvector"`
   - **collection_name**: Collection name for document storage
   - **persist_directory**: Directory to persist Chroma database
+- **embedder**: Embedding model configuration
+  - **type**: `"openai"` (default), `"ollama"`, or `"custom"`
+  - **api_key**: API key for OpenAI embedder (optional for custom)
+  - **base_url**: Base URL for embedder API
+  - **model**: Embedding model name
+  - **headers**: Custom headers for custom embedder (optional)
+  - **timeout**: Request timeout in seconds (optional)
 - **recreate**: Whether to recreate the knowledge base (default: false)
+- **upsert**: Whether to update existing documents (default: true)
+- **async_load**: Whether to load asynchronously (default: false)
 
 **Example with PgVector:**
 ```json
@@ -141,9 +158,100 @@ with DAG(
     "table_name": "pdf_documents",
     "db_url": "postgresql+psycopg://ai:ai@localhost:5532/ai"
   },
-  "recreate": false
+  "embedder": {
+    "type": "openai",
+    "api_key": "your-api-key",
+    "model": "text-embedding-3-small"
+  },
+  "recreate": false,
+  "upsert": true
 }
 ```
+
+**Example with Ollama Embedder:**
+```json
+"pdf_knowledge": {
+  "path": "/path/to/Problem_Solutions.pdf",
+  "vector_db": {
+    "type": "chroma",
+    "collection_name": "pdf_documents",
+    "persist_directory": "./chroma_db"
+  },
+  "embedder": {
+    "type": "ollama",
+    "host": "http://localhost:11434",
+    "model": "nomic-embed-text"
+  },
+  "recreate": false,
+  "upsert": true,
+  "async_load": true
+}
+```
+
+**Example with Custom GPU Cluster Embedder:**
+```json
+"pdf_knowledge": {
+  "path": "/path/to/Problem_Solutions.pdf",
+  "vector_db": {
+    "type": "chroma",
+    "collection_name": "pdf_documents",
+    "persist_directory": "./chroma_db"
+  },
+  "embedder": {
+    "type": "custom",
+    "base_url": "http://your-gpu-cluster:8000/v1",
+    "model": "your-embedding-model",
+    "api_key": "your-api-key",
+    "headers": {
+      "Authorization": "Bearer your-token",
+      "X-Custom-Header": "value"
+    },
+    "timeout": 60
+  },
+  "recreate": false,
+  "upsert": true,
+  "async_load": true
+}
+```
+
+### GPU Cluster Embedder Setup
+
+For custom GPU cluster embedding models, ensure your endpoint follows OpenAI-compatible API format:
+
+**Required Endpoint Format:**
+```
+POST /v1/embeddings
+Content-Type: application/json
+Authorization: Bearer your-api-key
+
+{
+  "input": "text to embed",
+  "model": "your-embedding-model"
+}
+```
+
+**Response Format:**
+```json
+{
+  "data": [
+    {
+      "embedding": [0.1, 0.2, 0.3, ...],
+      "index": 0
+    }
+  ],
+  "model": "your-embedding-model",
+  "usage": {
+    "prompt_tokens": 10,
+    "total_tokens": 10
+  }
+}
+```
+
+**Popular GPU Cluster Solutions:**
+- **vLLM**: High-performance LLM serving with embedding support
+- **TGI (Text Generation Inference)**: Hugging Face's inference server
+- **Custom FastAPI**: Your own embedding service
+- **Kubernetes**: Deploy embedding models at scale
 
 ### Script Execution
 - **Mode**: `"detach"` (background) or `"run"` (blocking)
