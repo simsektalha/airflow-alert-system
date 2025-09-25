@@ -45,7 +45,6 @@ class AgenticFailureProcessor:
                 self.agents["fix_planner"],
                 self.agents["verifier"],
             ],
-            model=model,
             instructions=[
                 "Collaborate to analyze an Airflow failure end-to-end.",
                 "Process: 1) LogIngestor summarizes logs, 2) RootCauseAnalyst infers cause with confidence, 3) FixPlanner drafts concrete steps + prevention, 4) Verifier validates and outputs final report.",
