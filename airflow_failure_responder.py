@@ -773,6 +773,7 @@ Please analyze this failure using your sequential workflow and output the final 
     resp = await team.arun(prompt)
     text = getattr(resp, "content", "") if resp else ""
     LOG.info("[llm] Team response received size=%d", len(text))
+    LOG.info("[llm] Team response content: %s", text[:500])  # Log first 500 chars for debugging
     
     # Parse the JSON response from the Verifier
     start = text.find("{")
@@ -783,6 +784,7 @@ Please analyze this failure using your sequential workflow and output the final 
         LOG.info("[llm] Successfully parsed JSON response from team")
         return result
     else:
+        LOG.error("[llm] No valid JSON found in team response. Full response: %s", text)
         raise ValueError("No valid JSON found in team response")
 
 
