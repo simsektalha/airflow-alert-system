@@ -10,6 +10,7 @@ import sys
 import time
 import requests
 from typing import Any, Dict, List, Optional, Tuple
+from pydantic import BaseModel
 
 import httpx
 
@@ -82,6 +83,17 @@ if SearchType is None:
         HYBRID = 'hybrid'
         MMR = 'mmr'
 
+
+# ---------- Pydantic Models ----------
+class AirflowFailureAnalysis(BaseModel):
+    """Pydantic model for Airflow failure analysis output."""
+    root_cause: str
+    category: str  # "network" | "dependency" | "config" | "code" | "infra" | "security" | "design" | "transient" | "other"
+    fix_steps: List[str]
+    prevention: List[str]
+    needs_rerun: bool
+    confidence: float
+    error_summary: str
 
 # ---------- Redaction ----------
 SECRET_PATTERNS = [
@@ -588,27 +600,17 @@ async def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
         model=model,
         name="Airflow Failure Response Team",
         members=[log_ingestor, root_cause_analyst, fix_planner, verifier],
+        output_schema=AirflowFailureAnalysis,
         instructions=[
             "You are a sequential AI team for Airflow failure analysis. Follow this EXACT workflow:",
             "",
             "1. LogIngestor processes the full task logs and extracts error information",
             "2. RootCauseAnalyst takes LogIngestor's output and identifies root cause using knowledge base",
             "3. FixPlanner takes RootCauseAnalyst's output and creates solutions using knowledge base",
-            "4. Verifier takes ALL previous outputs and produces the final JSON response",
+            "4. Verifier takes ALL previous outputs and produces the final structured response",
             "",
-            "CRITICAL: The Verifier must output ONLY a single JSON object with these exact keys:",
-            "{",
-            '    "root_cause": string,',
-            '    "category": "network" | "dependency" | "config" | "code" | "infra" | "security" | "design" | "transient" | "other",',
-            '    "fix_steps": [string, string, string],',
-            '    "prevention": [string, string],',
-            '    "needs_rerun": true|false,',
-            '    "confidence": number,',
-            '    "error_summary": string',
-            "}",
-            "",
-            "Do NOT output text descriptions. Only output the final JSON from the Verifier.",
             "Use the knowledge base to find proven solutions and best practices.",
+            "The output will be automatically structured according to the schema.",
         ],
         show_members_responses=True,
         markdown=False,
@@ -775,21 +777,16 @@ Execute your sequential workflow and output ONLY the final JSON response from th
     
     LOG.info("[llm] Team analysis prompt size: full_log=%d", len(full_log))
     resp = await team.arun(prompt)
-    text = getattr(resp, "content", "") if resp else ""
-    LOG.info("[llm] Team response received size=%d", len(text))
-    LOG.info("[llm] Team response content: %s", text[:500])  # Log first 500 chars for debugging
     
-    # Parse the JSON response from the Verifier
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        json_str = text[start:end+1]
-        result = json.loads(json_str)
-        LOG.info("[llm] Successfully parsed JSON response from team")
+    # With output_schema, the response content should be a Pydantic model instance
+    if hasattr(resp, 'content') and isinstance(resp.content, AirflowFailureAnalysis):
+        LOG.info("[llm] Successfully received structured response from team")
+        # Convert Pydantic model to dict
+        result = resp.content.model_dump()
         return result
     else:
-        LOG.error("[llm] No valid JSON found in team response. Full response: %s", text)
-        raise ValueError("No valid JSON found in team response")
+        LOG.error("[llm] Team response is not a valid AirflowFailureAnalysis model")
+        raise ValueError("Team response is not a valid AirflowFailureAnalysis model")
 
 
 async def ask_llm_for_analysis(agent: "Agent", full_log: str, identifiers: Dict[str, Any]) -> Dict[str, Any]:
