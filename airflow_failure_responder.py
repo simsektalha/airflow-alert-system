@@ -85,82 +85,91 @@ if SearchType is None:
 
 # ---------- Redaction ----------
 SECRET_PATTERNS = [
+    # AWS credentials
     r"AKIA[0-9A-Z]{16}",
     r"\baws_secret_access_key\b\s*[:=]\s*[A-Za-z0-9/+=]{30,}",
+    r"\baws_access_key_id\b\s*[:=]\s*[A-Za-z0-9/+=]{20,}",
+    r"\baws_session_token\b\s*[:=]\s*[A-Za-z0-9/+=]{100,}",
+    
+    # Generic secrets
     r"\bsecret\b\s*[:=]\s*[^,\s'\";]+",
     r"\bpassword\b\s*[:=]\s*[^,\s'\";]+",
     r"\btoken\b\s*[:=]\s*[^,\s'\";]+",
+    r"\bkey\b\s*[:=]\s*[A-Za-z0-9/+=]{20,}",
+    r"\bapi_key\b\s*[:=]\s*[A-Za-z0-9/+=]{20,}",
+    
+    # JWT tokens
     r"authorization:\s*bearer\s+[A-Za-z0-9.\-]+",
     r"\beyJ[a-zA-Z0-9_\-]{10,}\.[a-zA-Z0-9.\-]{10,}\.[a-zA-Z0-9.\-]{10,}\b",
+    
+    # Email addresses
     r"[A-Za-z0-9.%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
+    
+    # Database connection strings
+    r"postgresql://[^@]+@[^/]+",
+    r"mysql://[^@]+@[^/]+",
+    r"mongodb://[^@]+@[^/]+",
+    r"redis://[^@]+@[^/]+",
+    
+    # URLs with credentials
+    r"https?://[^@]+@[^/\s]+",
+    
+    # Private keys
+    r"-----BEGIN [A-Z ]+ PRIVATE KEY-----",
+    r"-----BEGIN [A-Z ]+ KEY-----",
 ]
 SECRET_RE = re.compile("|".join(SECRET_PATTERNS), flags=re.IGNORECASE)
 
 
 def redact_conn_strings(s: str) -> str:
-    return re.sub(r"([a-zA-Z]+:\/\/)([^:@\s]+):([^@\/\s]+)@", r"\1[REDACTED]:[REDACTED]@", s)
-
-
-def redact_text(s: str, *, tail_lines: int, max_len: int) -> str:
-    if not s:
-        return ""
-    s = redact_conn_strings(s)
-    s = SECRET_RE.sub("[REDACTED]", s)
-    lines = s.splitlines()
-    if len(lines) > tail_lines:
-        lines = lines[-tail_lines:]
-    s = "\n".join(lines)
-    if len(s) > max_len:
-        s = s[-max_len:]
+    """Redact connection strings with credentials."""
+    # Database connection strings
+    s = re.sub(r"([a-zA-Z]+:\/\/)([^:@\s]+):([^@\/\s]+)@", r"\1[REDACTED]:[REDACTED]@", s)
+    # URLs with credentials
+    s = re.sub(r"(https?://)([^@]+)@([^/\s]+)", r"\1[REDACTED]@\3", s)
     return s
 
 
-# ---------- Error extraction ----------
-def extract_error_focus(log_text: str, context_lines: int = 30, max_chars: int = 8000) -> Tuple[str, str]:
+def redact_text(s: str) -> str:
+    """Redact sensitive information from log text."""
+    if not s:
+        return ""
+    
+    # Redact connection strings first
+    s = redact_conn_strings(s)
+    
+    # Redact other sensitive patterns
+    s = SECRET_RE.sub("[REDACTED]", s)
+    
+    return s
+
+
+# ---------- Log processing ----------
+def process_logs(full_log: str, max_chars: int = 50000) -> str:
     """
-    Returns (error_focus, error_summary).
+    Process full task logs with redaction and intelligent truncation.
+    Returns the processed log text ready for AI analysis.
     """
-    lines = log_text.splitlines()
-    tb_start_idx = None
-    for i in range(len(lines) - 1, -1, -1):
-        if "Traceback (most recent call last):" in lines[i]:
-            tb_start_idx = i
-            break
-
-    focus_blocks: List[str] = []
-    if tb_start_idx is not None:
-        end = min(len(lines), tb_start_idx + 1 + 40)
-        focus_blocks.append("\n".join(lines[tb_start_idx:end]))
-
-    err_idxs = [i for i, ln in enumerate(lines) if re.search(r"\b(ERROR|CRITICAL|Exception|^Traceback)", ln)]
-    if err_idxs:
-        i = err_idxs[-1]
-        s = max(0, i - context_lines)
-        e = min(len(lines), i + context_lines)
-        focus_blocks.append("\n".join(lines[s:e]))
-
-    if not focus_blocks:
-        focus_blocks.append("\n".join(lines[-50:]))
-
-    error_focus = "\n...\n".join(focus_blocks)
-    if len(error_focus) > max_chars:
-        error_focus = error_focus[-max_chars:]
-
-    summary = ""
-    for ln in reversed(lines[-200:]):
-        m = re.search(r"([A-Za-z][A-Za-z0-9_\.]*Error: .+|Exception: .+|ERROR .+)", ln)
-        if m:
-            summary = m.group(0).strip()
-            break
-
-    if not summary and tb_start_idx is not None:
-        last_line_idx = min(len(lines)-1, tb_start_idx + 40)
-        summary = lines[last_line_idx].strip()
-
-    if not summary:
-        summary = "Task failed (no explicit error summary found)."
-
-    return error_focus, summary
+    if not full_log:
+        return ""
+    
+    # Redact sensitive information
+    processed_log = redact_text(full_log)
+    
+    # If log is too long, truncate intelligently
+    if len(processed_log) > max_chars:
+        lines = processed_log.splitlines()
+        
+        # Keep the beginning (task setup) and end (failure) of the log
+        # This preserves context while staying within limits
+        start_lines = lines[:max_chars // 4]  # First quarter
+        end_lines = lines[-(max_chars // 2):]  # Last half
+        
+        # Add truncation indicator
+        truncated_log = "\n".join(start_lines) + "\n\n... [LOG TRUNCATED] ...\n\n" + "\n".join(end_lines)
+        processed_log = truncated_log
+    
+    return processed_log
 
 
 # ---------- Fetch Airflow log by absolute URL (with loop guards) ----------
@@ -474,15 +483,16 @@ def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
         name="LogIngestor",
         instructions=[
             "You are a log analysis expert specializing in Airflow failure logs.",
-            "Your ONLY job is to extract and summarize error information from raw Airflow logs.",
-            "Input: Raw Airflow log text",
+            "Your ONLY job is to extract and summarize error information from full Airflow task logs.",
+            "Input: Full Airflow task log text (complete log from start to failure)",
             "Process:",
-            "1. Filter out non-error entries (info, debug, success messages)",
-            "2. Extract error messages, stack traces, failing operators",
-            "3. Identify retry attempts and timing information",
+            "1. Analyze the complete log to understand the task execution flow",
+            "2. Identify where the task started, what it was doing, and where it failed",
+            "3. Extract error messages, stack traces, failing operators, and retry attempts",
             "4. Focus on the most critical error messages and their context",
-            "Output: Clean error summary (maximum 10 lines) containing only error-related information",
-            "Do NOT analyze root causes or provide solutions - just extract and summarize errors.",
+            "5. Provide a concise summary of what went wrong (maximum 15 lines)",
+            "Output: Clean error summary containing key failure information",
+            "Do NOT analyze root causes or provide solutions - just extract and summarize what failed.",
         ],
         knowledge=pdf_kb,
         search_knowledge=True,
@@ -494,8 +504,8 @@ def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
         name="RootCauseAnalyst",
         instructions=[
             "You are an expert in Apache Airflow and data engineering root-cause analysis.",
-            "Your ONLY job is to analyze error logs and identify the root cause.",
-            "Input: Error logs and error summary from LogIngestor",
+            "Your ONLY job is to analyze error summary and identify the root cause.",
+            "Input: Error summary from LogIngestor (extracted from full task logs)",
             "Process:",
             "1. Search the knowledge base for similar error patterns and solutions",
             "2. Analyze the error summary to understand what went wrong",
@@ -579,13 +589,13 @@ def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
         members=[log_ingestor, root_cause_analyst, fix_planner, verifier],
         instructions=[
             "Sequential workflow for Airflow failure analysis using knowledge base:",
-            "1. LogIngestor: Extract and summarize error information from raw logs",
+            "1. LogIngestor: Extract and summarize error information from full task logs",
             "2. RootCauseAnalyst: Analyze error summary and search knowledge base for similar patterns",
             "3. FixPlanner: Create solutions based on root cause analysis and documented solutions from knowledge base",
             "4. Verifier: Validate solutions against knowledge base and consolidate into final JSON response",
             "",
             "Each agent works with specific input from the previous agent:",
-            "- LogIngestor gets raw Airflow logs",
+            "- LogIngestor gets full Airflow task logs (complete execution from start to failure)",
             "- RootCauseAnalyst gets error summary from LogIngestor, searches knowledge base for similar cases",
             "- FixPlanner gets root cause analysis from RootCauseAnalyst, finds documented solutions",
             "- Verifier gets all previous outputs, validates against knowledge base, creates final JSON",
@@ -742,7 +752,7 @@ Example output
     )
 
 
-async def ask_team_for_analysis(team: "Team", error_focus: str, log_tail: str, identifiers: Dict[str, Any]) -> Dict[str, Any]:
+async def ask_team_for_analysis(team: "Team", full_log: str, identifiers: Dict[str, Any]) -> Dict[str, Any]:
     """Ask the team for sequential analysis workflow."""
     # Simple prompt since team already has detailed instructions
     prompt = f"""
@@ -751,18 +761,14 @@ async def ask_team_for_analysis(team: "Team", error_focus: str, log_tail: str, i
 **DAG ID**: {identifiers.get('dag_id', 'Unknown')}
 **Task ID**: {identifiers.get('task_id', 'Unknown')}
 
-## Raw Airflow Logs
+## Full Task Logs
 
-**Error Focus:**
-{error_focus}
-
-**Log Tail:**
-{log_tail}
+{full_log}
 
 Please analyze this failure using your sequential workflow and output the final JSON response.
 """
     
-    LOG.info("[llm] Team analysis prompt sizes: error_focus=%d, tail=%d", len(error_focus), len(log_tail))
+    LOG.info("[llm] Team analysis prompt size: full_log=%d", len(full_log))
     resp = await team.arun(prompt)
     text = getattr(resp, "content", "") if resp else ""
     LOG.info("[llm] Team response received size=%d", len(text))
@@ -779,7 +785,7 @@ Please analyze this failure using your sequential workflow and output the final 
         raise ValueError("No valid JSON found in team response")
 
 
-async def ask_llm_for_analysis(agent: "Agent", error_focus: str, log_tail: str, identifiers: Dict[str, Any]) -> Dict[str, Any]:
+async def ask_llm_for_analysis(agent: "Agent", full_log: str, identifiers: Dict[str, Any]) -> Dict[str, Any]:
     prompt = {
         "context": {
             "dag_id": identifiers.get("dag_id"),
@@ -787,10 +793,9 @@ async def ask_llm_for_analysis(agent: "Agent", error_focus: str, log_tail: str, 
             "task_id": identifiers.get("task_id"),
             "try_number": identifiers.get("try_number"),
         },
-        "error_focus": error_focus,
-        "log_tail": log_tail,
+        "full_log": full_log,
     }
-    LOG.info("[llm] prompt sizes: error_focus=%d, tail=%d", len(error_focus), len(log_tail))
+    LOG.info("[llm] prompt size: full_log=%d", len(full_log))
     resp = await agent.arun(json.dumps(prompt, ensure_ascii=False))
     text = getattr(resp, "content", "") if resp else ""
     LOG.info("[llm] response received size=%d", len(text))
@@ -1042,13 +1047,9 @@ async def main_async() -> None:
     )
     LOG.info("[parse] full_log_len=%d (%.2fs)", len(full_log), time.time() - t_fetch)
 
-    # 2) Redact + extract
-    log_tail_redacted = redact_text(full_log, tail_lines=160, max_len=1800)
-    LOG.info("[parse] tail_len=%d", len(log_tail_redacted))
-    error_focus_raw, error_summary = extract_error_focus(full_log)
-    LOG.info("[parse] error_focus_len=%d summary=%s", len(error_focus_raw), error_summary[:160].replace("\n"," "))
-    error_focus_redacted = redact_text(error_focus_raw, tail_lines=999999, max_len=8000)
-    LOG.info("[parse] error_focus_redacted_len=%d", len(error_focus_redacted))
+    # 2) Process full logs with redaction and intelligent truncation
+    processed_log = process_logs(full_log, max_chars=50000)
+    LOG.info("[parse] processed_log_len=%d", len(processed_log))
 
 # 3) Analyze with Team (or fallback to single agent)
     team = build_team_from_cfg(cfg)
@@ -1062,8 +1063,7 @@ async def main_async() -> None:
             LOG.info("[llm] Using Team for collaborative analysis")
             analysis = await ask_team_for_analysis(
                 team=team,
-                error_focus=error_focus_redacted,
-                log_tail=log_tail_redacted,
+                full_log=processed_log,
                 identifiers={
                     "dag_id": args.dag_id,
                     "dag_run_id": args.dag_run_id,
@@ -1111,8 +1111,7 @@ async def main_async() -> None:
         try:
             analysis = await ask_llm_for_analysis(
                 agent=agent,
-                error_focus=error_focus_redacted,
-                log_tail=log_tail_redacted,
+                full_log=processed_log,
                 identifiers={
                     "dag_id": args.dag_id,
                     "dag_run_id": args.dag_run_id,
