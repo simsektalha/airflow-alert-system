@@ -476,11 +476,12 @@ def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
             "You are a log analysis specialist. Your role is to ingest raw Airflow task logs and produce a concise, lossless summary.",
             "Extract key information: errors, stack traces, failing operators, retry attempts, and timing information.",
             "Focus on the most critical error messages and their context.",
-            "Output only the distilled summary (maximum 15 lines).",
+            "Output only the distilled summary (maximum 15 lines) that will help other agents analyze the failure.",
+            "Focus on extracting the error_summary for the final JSON output.",
         ],
         knowledge=pdf_kb,
         search_knowledge=True,
-        markdown=True,
+        markdown=False,
     )
 
     root_cause_analyst = Agent(
@@ -493,11 +494,12 @@ def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
             "Use the knowledge base to find similar problems and solutions from past experiences.",
             "Call out assumptions and missing context explicitly.",
             "Provide a confidence score (0-1) for your analysis.",
-            "Output a short paragraph explaining the root cause and your confidence level.",
+            "Focus on identifying the root_cause and appropriate category for the final JSON output.",
+            "Output a concise analysis that will help the Verifier create the final JSON response.",
         ],
         knowledge=pdf_kb,
         search_knowledge=True,
-        markdown=True,
+        markdown=False,
     )
 
     fix_planner = Agent(
@@ -507,14 +509,16 @@ def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
             "You are a solutions architect specializing in Airflow failure remediation.",
             "Given a root cause analysis, produce concrete, minimal-risk fix steps for Airflow failures.",
             "Use the knowledge base to find proven solutions and best practices for similar problems.",
-            "Return a numbered list of 3-7 actionable steps that can be executed immediately.",
-            "Include 3-5 prevention tips to avoid similar failures in the future.",
+            "Focus on creating fix_steps and prevention items for the final JSON output.",
+            "Provide 3-7 actionable fix steps that can be executed immediately.",
+            "Include 2-6 prevention tips to avoid similar failures in the future.",
             "Prefer configuration changes, code fixes, and operational improvements that are realistically applicable.",
             "Consider both immediate fixes and long-term improvements.",
+            "Output a concise plan that will help the Verifier create the final JSON response.",
         ],
         knowledge=pdf_kb,
         search_knowledge=True,
-        markdown=True,
+        markdown=False,
     )
 
     verifier = Agent(
@@ -526,11 +530,26 @@ def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
             "Use the knowledge base to validate solutions against proven best practices.",
             "Check for logical consistency, completeness, and feasibility of the proposed solutions.",
             "If something seems off or incomplete, propose a safer alternative plan.",
-            "Output a final, concise report with: Root cause, Fix steps, Prevention tips, and Overall assessment.",
+            "",
+            "CRITICAL: You must output ONLY a single JSON object with EXACTLY these keys:",
+            "{",
+            '    "root_cause": string,',
+            '    "category": "network" | "dependency" | "config" | "code" | "infra" | "security" | "design" | "transient" | "other",',
+            '    "fix_steps": [string, string, string],',
+            '    "prevention": [string, string],',
+            '    "needs_rerun": true|false,',
+            '    "confidence": number,',
+            '    "error_summary": string',
+            "}",
+            "- Keep answers concise and practical.",
+            "- 'fix_steps' should be 3-7 items (you may include up to 7).",
+            "- 'prevention' should be 2-6 items.",
+            "- 'confidence' is 0.0-1.0.",
+            "- Do NOT wrap in markdown; output raw JSON only.",
         ],
         knowledge=pdf_kb,
         search_knowledge=True,
-        markdown=True,
+        markdown=False,
     )
 
     # Create the team
@@ -542,9 +561,21 @@ def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
             "Process: 1) LogIngestor summarizes logs, 2) RootCauseAnalyst infers cause with confidence, 3) FixPlanner drafts concrete steps + prevention, 4) Verifier validates and outputs final report.",
             "Only the Verifier should produce the final consolidated output.",
             "Ensure all analysis is practical and actionable for Airflow operators.",
+            "",
+            "CRITICAL: The final output must be ONLY a single JSON object with EXACTLY these keys:",
+            "{",
+            '    "root_cause": string,',
+            '    "category": "network" | "dependency" | "config" | "code" | "infra" | "security" | "design" | "transient" | "other",',
+            '    "fix_steps": [string, string, string],',
+            '    "prevention": [string, string],',
+            '    "needs_rerun": true|false,',
+            '    "confidence": number,',
+            '    "error_summary": string',
+            "}",
+            "- Do NOT wrap in markdown; output raw JSON only.",
         ],
         show_members_responses=True,
-        markdown=True,
+        markdown=False,
     )
 
     LOG.info("[llm] Team initialized successfully with 4 specialized agents")
