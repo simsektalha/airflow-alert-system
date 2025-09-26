@@ -67,7 +67,8 @@ airflow-alert-system/
 - **LLM Providers**: OpenAI, Ollama, vLLM, Custom GPU clusters
 - **Output Methods**: stdout, file, Microsoft Teams
 - **PDF Knowledge**: Custom Problem_Solutions.pdf integration
-- **Vector Databases**: Chroma, PgVector
+- **Vector Databases**: Chroma, PgVector, LanceDB
+- **Vector Databases**: Chroma, PgVector, LanceDB
 
 ### Advanced Features
 - **Hybrid Search**: Combines vector and keyword search
@@ -80,6 +81,34 @@ airflow-alert-system/
 - **[Configuration Guide](docs/CONFIGURATION.md)** - Complete configuration options
 - **[PDF Integration](docs/PDF_INTEGRATION.md)** - PDF knowledge base setup
 - **[GPU Cluster Setup](docs/GPU_CLUSTER.md)** - Custom embedder configuration
+
+## 🗂️ LanceDB (Local Dev/Test Vector DB)
+
+Use LanceDB to keep knowledge fully local without external services. Configure in your Airflow Variable JSON under `pdf_knowledge`:
+
+```json
+{
+  "pdf_knowledge": {
+    "path": "./docs/Problem_Solutions.pdf",
+    "vector_db": {
+      "type": "lancedb",
+      "table_name": "pdf_documents_dev",
+      "uri": ".dev_lancedb"
+    },
+    "embedder": {
+      "type": "ollama",
+      "host": "http://localhost:11434",
+      "model": "nomic-embed-text"
+    },
+    "recreate": true,
+    "upsert": true
+  }
+}
+```
+
+Notes:
+- Set `uri` to a local folder (e.g., `.dev_lancedb`). Delete it to reset.
+- For offline/dev, prefer a local embedder (e.g., `ollama`). You can also use any OpenAI-compatible embedder by setting `embedder.type` to `custom` and providing `base_url`.
 
 ## 🧪 Testing
 
