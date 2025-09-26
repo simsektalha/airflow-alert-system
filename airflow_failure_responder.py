@@ -585,6 +585,7 @@ async def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
 
     # Create the team
     team = Team(
+        model=model,
         name="Airflow Failure Response Team",
         members=[log_ingestor, root_cause_analyst, fix_planner, verifier],
         instructions=[
