@@ -38,12 +38,13 @@ default_args = {
 
 ## 📊 Features
 
-- **🤖 AI Team Analysis**: Collaborative AI agents for enhanced root cause analysis
+- **🤖 Sequential AI Team**: Specialized agents working in sequence for focused analysis
 - **📄 PDF Knowledge Base**: Integrates custom Problem_Solutions.pdf for proven solutions
-- **🔍 Hybrid Search**: Advanced vector search with multiple embedder options
+- **🔍 Smart Search**: Agents search knowledge base first for documented solutions
 - **📤 Multi-Channel Output**: stdout, file, or Microsoft Teams notifications
 - **⚡ Event-Driven**: Automatic failure detection via Airflow callbacks
 - **🔧 Configurable**: Flexible configuration via Airflow Variables
+- **🎯 Focused Workflow**: Each agent has specific input/output responsibilities
 
 ## 📁 Project Structure
 
@@ -61,17 +62,40 @@ airflow-alert-system/
 └── README.md                            # This file
 ```
 
+## 🤖 AI Team Workflow
+
+The system uses a sequential team of specialized AI agents:
+
+### 1. **LogIngestor**
+- **Input**: Raw Airflow logs
+- **Process**: Extracts and summarizes error information
+- **Output**: Clean error summary (max 10 lines)
+
+### 2. **RootCauseAnalyst**
+- **Input**: Error summary from LogIngestor
+- **Process**: Searches knowledge base for similar patterns, identifies root cause
+- **Output**: Root cause analysis with category and confidence
+
+### 3. **FixPlanner**
+- **Input**: Root cause analysis from RootCauseAnalyst
+- **Process**: Searches knowledge base for documented solutions, creates fix plan
+- **Output**: Specific fix steps and prevention measures
+
+### 4. **Verifier**
+- **Input**: All previous agent outputs
+- **Process**: Validates solutions against knowledge base, consolidates
+- **Output**: Final JSON response in required schema
+
 ## 🔧 Configuration
 
 ### Basic Configuration
 - **LLM Providers**: OpenAI, Ollama, vLLM, Custom GPU clusters
 - **Output Methods**: stdout, file, Microsoft Teams
 - **PDF Knowledge**: Custom Problem_Solutions.pdf integration
-- **Vector Databases**: Chroma, PgVector, LanceDB
-- **Vector Databases**: Chroma, PgVector, LanceDB
+- **Vector Databases**: Chroma, PgVector, LanceDB (default: LanceDB)
 
 ### Advanced Features
-- **Hybrid Search**: Combines vector and keyword search
+- **Smart Search**: Agents search knowledge base first for documented solutions
 - **Custom Embedders**: GPU cluster embedding models
 - **Async Loading**: Non-blocking PDF processing
 - **Upsert Support**: Incremental knowledge base updates
@@ -79,12 +103,13 @@ airflow-alert-system/
 ## 📚 Documentation
 
 - **[Configuration Guide](docs/CONFIGURATION.md)** - Complete configuration options
+- **[AI Team Workflow](docs/AI_TEAM_WORKFLOW.md)** - Sequential agent workflow details
 - **[PDF Integration](docs/PDF_INTEGRATION.md)** - PDF knowledge base setup
 - **[GPU Cluster Setup](docs/GPU_CLUSTER.md)** - Custom embedder configuration
 
-## 🗂️ LanceDB (Local Dev/Test Vector DB)
+## 🗂️ Default Configuration (LanceDB + Ollama)
 
-Use LanceDB to keep knowledge fully local without external services. Configure in your Airflow Variable JSON under `pdf_knowledge`:
+The system now defaults to LanceDB (vector database) and Ollama (embedder) for local development:
 
 ```json
 {
@@ -92,13 +117,12 @@ Use LanceDB to keep knowledge fully local without external services. Configure i
     "path": "./docs/Problem_Solutions.pdf",
     "vector_db": {
       "type": "lancedb",
-      "table_name": "pdf_documents_dev",
-      "uri": ".dev_lancedb"
+      "table_name": "vectors",
+      "uri": "./lancedb"
     },
     "embedder": {
       "type": "ollama",
-      "host": "http://localhost:11434",
-      "model": "nomic-embed-text"
+      "id": "nomic-embed-text"
     },
     "recreate": true,
     "upsert": true
@@ -106,9 +130,16 @@ Use LanceDB to keep knowledge fully local without external services. Configure i
 }
 ```
 
-Notes:
-- Set `uri` to a local folder (e.g., `.dev_lancedb`). Delete it to reset.
-- For offline/dev, prefer a local embedder (e.g., `ollama`). You can also use any OpenAI-compatible embedder by setting `embedder.type` to `custom` and providing `base_url`.
+**Key Changes:**
+- **Default Vector DB**: LanceDB (was Chroma)
+- **Default Embedder**: Ollama (was OpenAI)
+- **Optional Host**: Ollama host parameter is optional (defaults to localhost:11434)
+- **Model Parameter**: Changed from `model` to `id` for Ollama embedder
+
+**Notes:**
+- Set `uri` to a local folder (e.g., `./lancedb`). Delete it to reset.
+- Ollama host is optional - if not provided, defaults to `http://localhost:11434`
+- For offline/dev, this configuration keeps everything local
 
 ## 🧪 Testing
 
