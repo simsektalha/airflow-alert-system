@@ -39,15 +39,13 @@ The system uses a single Airflow Variable `v_callback_fetch_failed_task` contain
   "pdf_knowledge": {
     "path": "/path/to/Problem_Solutions.pdf",
     "vector_db": {
-      "type": "chroma",
-      "collection_name": "pdf_documents",
-      "persist_directory": "./chroma_db"
+      "type": "lancedb",
+      "table_name": "vectors",
+      "uri": "./lancedb"
     },
     "embedder": {
-      "type": "openai",
-      "api_key": "your-embedder-api-key",
-      "base_url": "https://api.openai.com/v1",
-      "model": "text-embedding-3-small"
+      "type": "ollama",
+      "id": "nomic-embed-text"
     },
     "recreate": false,
     "upsert": true,
@@ -133,7 +131,90 @@ The system uses a single Airflow Variable `v_callback_fetch_failed_task` contain
 - **timeout_sec**: Maximum execution time in seconds
 - **python**: Custom Python interpreter path
 
+## 🤖 AI Team Configuration
+
+The system uses a sequential team of specialized AI agents:
+
+### Agent Roles
+- **LogIngestor**: Extracts error information from raw logs
+- **RootCauseAnalyst**: Searches knowledge base for similar patterns, identifies root cause
+- **FixPlanner**: Finds documented solutions from knowledge base, creates fix plan
+- **Verifier**: Validates solutions against knowledge base, outputs final JSON
+
+### Knowledge Base Integration
+All agents have access to the PDF knowledge base and will:
+1. Search for similar problems and solutions first
+2. Reference documented solutions from your PDF files
+3. Validate solutions against best practices in the knowledge base
+
 ## 📄 PDF Knowledge Base
+
+### Default Configuration (LanceDB + Ollama)
+```json
+"pdf_knowledge": {
+  "path": "./docs/Problem_Solutions.pdf",
+  "vector_db": {
+    "type": "lancedb",
+    "table_name": "vectors",
+    "uri": "./lancedb"
+  },
+  "embedder": {
+    "type": "ollama",
+    "id": "nomic-embed-text"
+  },
+  "recreate": false,
+  "upsert": true
+}
+```
+
+### Vector Database Options
+
+#### LanceDB (Default)
+```json
+"vector_db": {
+  "type": "lancedb",
+  "table_name": "vectors",
+  "uri": "./lancedb"
+}
+```
+
+#### Chroma
+```json
+"vector_db": {
+  "type": "chroma",
+  "collection_name": "pdf_documents",
+  "persist_directory": "./chroma_db"
+}
+```
+
+#### PgVector
+```json
+"vector_db": {
+  "type": "pgvector",
+  "table_name": "pdf_documents",
+  "db_url": "postgresql+psycopg://user:pass@localhost:5432/db"
+}
+```
+
+### Embedder Options
+
+#### Ollama (Default)
+```json
+"embedder": {
+  "type": "ollama",
+  "id": "nomic-embed-text"
+}
+```
+
+#### OpenAI
+```json
+"embedder": {
+  "type": "openai",
+  "api_key": "your-api-key",
+  "base_url": "https://api.openai.com/v1",
+  "id": "text-embedding-3-small"
+}
+```
 
 See [PDF Integration Guide](PDF_INTEGRATION.md) for detailed PDF configuration.
 
