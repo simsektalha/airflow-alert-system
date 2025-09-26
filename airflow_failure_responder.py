@@ -318,37 +318,41 @@ def setup_pdf_knowledge_base(cfg: Dict[str, Any]) -> Optional["Knowledge"]:
     try:
         # Configure vector database
         vector_db_config = pdf_config.get("vector_db", {})
-        vector_db_type = vector_db_config.get("type", "chroma")
+        vector_db_type = vector_db_config.get("type", "lancedb")
         
         # Configure embedder first (needed for vector database)
         embedder_config = pdf_config.get("embedder", {})
-        embedder_type = embedder_config.get("type", "openai")
+        embedder_type = embedder_config.get("type", "ollama")
         embedder = None
         
         if embedder_type == "openai" and OpenAIEmbedder and embedder_config.get("api_key"):
             embedder = OpenAIEmbedder(
                 api_key=embedder_config["api_key"],
                 base_url=embedder_config.get("base_url", "https://api.openai.com/v1"),
-                model=embedder_config.get("model", "text-embedding-3-small")
+                id=embedder_config.get("id", "text-embedding-3-small")
             )
-            LOG.info("[pdf] Using OpenAI embedder: %s", embedder_config.get("model", "text-embedding-3-small"))
-        elif embedder_type == "ollama" and OllamaEmbedder and embedder_config.get("host"):
-            embedder = OllamaEmbedder(
-                host=embedder_config["host"],
-                model=embedder_config.get("model", "nomic-embed-text")
-            )
-            LOG.info("[pdf] Using Ollama embedder: %s", embedder_config.get("model", "nomic-embed-text"))
+            LOG.info("[pdf] Using OpenAI embedder: %s", embedder_config.get("id", "text-embedding-3-small"))
+        elif embedder_type == "ollama" and OllamaEmbedder:
+            # Create Ollama embedder with optional host parameter
+            ollama_kwargs = {
+                "id": embedder_config.get("id", "nomic-embed-text")
+            }
+            if embedder_config.get("host"):
+                ollama_kwargs["host"] = embedder_config["host"]
+            
+            embedder = OllamaEmbedder(**ollama_kwargs)
+            LOG.info("[pdf] Using Ollama embedder: %s", embedder_config.get("id", "nomic-embed-text"))
         elif embedder_type == "custom" and embedder_config.get("base_url"):
             # Custom embedder for GPU cluster
             embedder = OpenAIEmbedder(
                 api_key=embedder_config.get("api_key", "dummy-key"),  # Some endpoints don't require auth
                 base_url=embedder_config["base_url"],
-                model=embedder_config.get("model", "embedding"),
+                id=embedder_config.get("id", "embedding"),
                 headers=embedder_config.get("headers", {}),
                 timeout=embedder_config.get("timeout", 30)
             )
             LOG.info("[pdf] Using custom GPU cluster embedder: %s at %s", 
-                    embedder_config.get("model", "embedding"), 
+                    embedder_config.get("id", "embedding"), 
                     embedder_config["base_url"])
         
         # Configure vector database with embedder
@@ -374,15 +378,22 @@ def setup_pdf_knowledge_base(cfg: Dict[str, Any]) -> Optional["Knowledge"]:
             )
         
         if vector_db is None:
-            LOG.warning("[pdf] No vector database configured; using default Chroma")
-            if Chroma:
+            LOG.warning("[pdf] No vector database configured; using default LanceDB")
+            if LanceDb:
+                vector_db = LanceDb(
+                    table_name="vectors",
+                    uri="./lancedb",
+                    embedder=embedder,
+                )
+            elif Chroma:
+                LOG.warning("[pdf] LanceDB not available; falling back to Chroma")
                 vector_db = Chroma(
                     collection_name="pdf_documents", 
                     persist_directory="./chroma_db",
                     embedder=embedder,
                 )
             else:
-                LOG.warning("[pdf] Chroma not available; creating knowledge base without vector DB")
+                LOG.warning("[pdf] No vector database available; creating knowledge base without vector DB")
         
         
         # Create Knowledge instance with Agno 2.0.3 API
