@@ -103,6 +103,7 @@ The system uses a sequential team of specialized AI agents:
 ## 📚 Documentation
 
 - **[Configuration Guide](docs/CONFIGURATION.md)** - Complete configuration options
+- **[AI Team Workflow](docs/AI_TEAM_WORKFLOW.md)** - Sequential agent workflow details
 - **[PDF Integration](docs/PDF_INTEGRATION.md)** - PDF knowledge base setup
 - **[GPU Cluster Setup](docs/GPU_CLUSTER.md)** - Custom embedder configuration
 
