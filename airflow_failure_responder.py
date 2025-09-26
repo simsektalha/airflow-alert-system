@@ -473,11 +473,16 @@ def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
         model=model,
         name="LogIngestor",
         instructions=[
-            "You are a log analysis specialist. Your role is to ingest raw Airflow task logs and produce a concise, lossless summary.",
-            "Extract key information: errors, stack traces, failing operators, retry attempts, and timing information.",
-            "Focus on the most critical error messages and their context.",
-            "Output only the distilled summary (maximum 15 lines) that will help other agents analyze the failure.",
-            "Focus on extracting the error_summary for the final JSON output.",
+            "You are a log analysis expert specializing in Airflow failure logs.",
+            "Your ONLY job is to extract and summarize error information from raw Airflow logs.",
+            "Input: Raw Airflow log text",
+            "Process:",
+            "1. Filter out non-error entries (info, debug, success messages)",
+            "2. Extract error messages, stack traces, failing operators",
+            "3. Identify retry attempts and timing information",
+            "4. Focus on the most critical error messages and their context",
+            "Output: Clean error summary (maximum 10 lines) containing only error-related information",
+            "Do NOT analyze root causes or provide solutions - just extract and summarize errors.",
         ],
         knowledge=pdf_kb,
         search_knowledge=True,
@@ -489,13 +494,16 @@ def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
         name="RootCauseAnalyst",
         instructions=[
             "You are an expert in Apache Airflow and data engineering root-cause analysis.",
-            "Given DAG context and a log summary, identify the most likely root cause of the failure.",
-            "Consider common Airflow failure patterns: dependency issues, configuration problems, resource constraints, network issues, and code errors.",
-            "Use the knowledge base to find similar problems and solutions from past experiences.",
-            "Call out assumptions and missing context explicitly.",
-            "Provide a confidence score (0-1) for your analysis.",
-            "Focus on identifying the root_cause and appropriate category for the final JSON output.",
-            "Output a concise analysis that will help the Verifier create the final JSON response.",
+            "Your ONLY job is to analyze error logs and identify the root cause.",
+            "Input: Error logs and error summary from LogIngestor",
+            "Process:",
+            "1. Analyze the error summary to understand what went wrong",
+            "2. Identify the PRIMARY root cause (not symptoms)",
+            "3. Determine the failure category: network, dependency, config, code, infra, security, design, transient, other",
+            "4. Explain why the error occurred",
+            "5. Assess confidence level (0.0-1.0)",
+            "Output: Root cause analysis with category and confidence",
+            "Do NOT provide solutions - just identify and categorize the problem.",
         ],
         knowledge=pdf_kb,
         search_knowledge=True,
@@ -507,14 +515,16 @@ def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
         name="FixPlanner",
         instructions=[
             "You are a solutions architect specializing in Airflow failure remediation.",
-            "Given a root cause analysis, produce concrete, minimal-risk fix steps for Airflow failures.",
-            "Use the knowledge base to find proven solutions and best practices for similar problems.",
-            "Focus on creating fix_steps and prevention items for the final JSON output.",
-            "Provide 3-7 actionable fix steps that can be executed immediately.",
-            "Include 2-6 prevention tips to avoid similar failures in the future.",
-            "Prefer configuration changes, code fixes, and operational improvements that are realistically applicable.",
-            "Consider both immediate fixes and long-term improvements.",
-            "Output a concise plan that will help the Verifier create the final JSON response.",
+            "Your ONLY job is to create solutions based on root cause analysis.",
+            "Input: Root cause analysis from RootCauseAnalyst",
+            "Process:",
+            "1. Take the root cause analysis and understand the problem",
+            "2. Create 3-7 specific, actionable fix steps",
+            "3. Include 2-6 prevention measures to avoid future failures",
+            "4. Determine if the task needs a rerun after fixes",
+            "5. Use knowledge base to find proven solutions for similar problems",
+            "Output: Detailed fix plan with steps, prevention measures, and rerun recommendation",
+            "Focus on practical, actionable solutions that Airflow operators can implement immediately.",
         ],
         knowledge=pdf_kb,
         search_knowledge=True,
@@ -526,10 +536,14 @@ def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
         name="Verifier",
         instructions=[
             "You are a quality assurance specialist for failure analysis.",
-            "Verify that the root cause analysis and fix plan are consistent with the log summary.",
-            "Use the knowledge base to validate solutions against proven best practices.",
-            "Check for logical consistency, completeness, and feasibility of the proposed solutions.",
-            "If something seems off or incomplete, propose a safer alternative plan.",
+            "Your ONLY job is to consolidate all team inputs into the final JSON response.",
+            "Input: Error summary from LogIngestor, root cause analysis from RootCauseAnalyst, fix plan from FixPlanner",
+            "Process:",
+            "1. Take the error summary from LogIngestor",
+            "2. Take the root cause analysis from RootCauseAnalyst",
+            "3. Take the fix plan from FixPlanner",
+            "4. Verify logical consistency between all inputs",
+            "5. Consolidate everything into the required JSON format",
             "",
             "CRITICAL: You must output ONLY a single JSON object with EXACTLY these keys:",
             "{",
@@ -541,8 +555,7 @@ def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
             '    "confidence": number,',
             '    "error_summary": string',
             "}",
-            "- Keep answers concise and practical.",
-            "- 'fix_steps' should be 3-7 items (you may include up to 7).",
+            "- 'fix_steps' should be 3-7 items.",
             "- 'prevention' should be 2-6 items.",
             "- 'confidence' is 0.0-1.0.",
             "- Do NOT wrap in markdown; output raw JSON only.",
@@ -557,22 +570,20 @@ def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
         name="Airflow Failure Response Team",
         members=[log_ingestor, root_cause_analyst, fix_planner, verifier],
         instructions=[
-            "Collaborate to analyze an Airflow failure end-to-end.",
-            "Process: 1) LogIngestor summarizes logs, 2) RootCauseAnalyst infers cause with confidence, 3) FixPlanner drafts concrete steps + prevention, 4) Verifier validates and outputs final report.",
-            "Only the Verifier should produce the final consolidated output.",
-            "Ensure all analysis is practical and actionable for Airflow operators.",
+            "Sequential workflow for Airflow failure analysis:",
+            "1. LogIngestor: Extract and summarize error information from raw logs",
+            "2. RootCauseAnalyst: Analyze error summary to identify root cause and category",
+            "3. FixPlanner: Create solutions based on root cause analysis",
+            "4. Verifier: Consolidate all inputs into final JSON response",
             "",
-            "CRITICAL: The final output must be ONLY a single JSON object with EXACTLY these keys:",
-            "{",
-            '    "root_cause": string,',
-            '    "category": "network" | "dependency" | "config" | "code" | "infra" | "security" | "design" | "transient" | "other",',
-            '    "fix_steps": [string, string, string],',
-            '    "prevention": [string, string],',
-            '    "needs_rerun": true|false,',
-            '    "confidence": number,',
-            '    "error_summary": string',
-            "}",
-            "- Do NOT wrap in markdown; output raw JSON only.",
+            "Each agent works with specific input from the previous agent:",
+            "- LogIngestor gets raw Airflow logs",
+            "- RootCauseAnalyst gets error summary from LogIngestor",
+            "- FixPlanner gets root cause analysis from RootCauseAnalyst",
+            "- Verifier gets all previous outputs and creates final JSON",
+            "",
+            "Only the Verifier produces the final JSON output in the required schema.",
+            "Ensure all analysis is practical and actionable for Airflow operators.",
         ],
         show_members_responses=True,
         markdown=False,
@@ -722,7 +733,7 @@ Example output
 
 
 async def ask_team_for_analysis(team: "Team", error_focus: str, log_tail: str, identifiers: Dict[str, Any]) -> Dict[str, Any]:
-    """Ask the team for collaborative analysis."""
+    """Ask the team for sequential analysis workflow."""
     prompt = f"""
 # Airflow Failure Analysis Request
 
@@ -732,35 +743,50 @@ async def ask_team_for_analysis(team: "Team", error_focus: str, log_tail: str, i
 - **Task ID**: {identifiers.get('task_id', 'Unknown')}
 - **Try Number**: {identifiers.get('try_number', 'Unknown')}
 
-## Failed Task Logs
+## Raw Airflow Logs
 
 ### Error Focus (Critical Error Information)
-```log
 {error_focus}
-```
 
 ### Log Tail (Recent Log Entries)
-```log
 {log_tail}
-```
 
-## Team Collaboration Process
+## Sequential Analysis Workflow
 
-Please work together to analyze this Airflow failure:
+Please follow this sequential process:
 
-1. **LogIngestor**: Summarize the logs concisely, extracting key errors and context
-2. **RootCauseAnalyst**: Identify the most likely root cause with confidence score
-3. **FixPlanner**: Propose concrete fix steps and prevention measures
-4. **Verifier**: Validate the analysis and provide final consolidated report
+1. **LogIngestor**: Extract only error-related information from the raw logs
+   - Filter out non-error entries (info, debug, success messages)
+   - Extract error messages, stack traces, failing operators
+   - Provide clean error summary (max 10 lines)
 
-## Expected Output Format
+2. **RootCauseAnalyst**: Analyze the error summary to identify root cause
+   - Take the error summary from LogIngestor
+   - Identify the PRIMARY root cause (not symptoms)
+   - Determine category: network, dependency, config, code, infra, security, design, transient, other
+   - Provide confidence level (0.0-1.0)
 
-The Verifier should provide a final report with:
-- **Root Cause**: Clear explanation of what went wrong
-- **Fix Steps**: Numbered list of actionable steps (3-7 items)
-- **Prevention Tips**: Bullet points for avoiding future issues (3-5 items)
-- **Confidence**: Overall confidence in the analysis (0-1)
-- **Priority**: High/Medium/Low priority for addressing this issue
+3. **FixPlanner**: Create solution based on root cause analysis
+   - Take the root cause analysis from RootCauseAnalyst
+   - Provide 3-7 specific, actionable fix steps
+   - Include 2-6 prevention measures
+   - Determine if task needs rerun after fixes
+
+4. **Verifier**: Consolidate all inputs into final JSON response
+   - Take outputs from all previous agents
+   - Verify logical consistency
+   - Output final JSON in required schema format
+
+The Verifier must output ONLY a single JSON object with these exact keys:
+{{
+    "root_cause": string,
+    "category": "network" | "dependency" | "config" | "code" | "infra" | "security" | "design" | "transient" | "other",
+    "fix_steps": [string, string, string],
+    "prevention": [string, string],
+    "needs_rerun": true|false,
+    "confidence": number,
+    "error_summary": string
+}}
 
 Focus on practical, actionable solutions that Airflow operators can implement immediately.
 """
