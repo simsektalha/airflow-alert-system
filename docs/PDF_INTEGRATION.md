@@ -1,21 +1,35 @@
 # PDF Knowledge Base Integration
 
-Guide for integrating your custom `Problem_Solutions.pdf` with the AI agents for enhanced problem-solving.
+Guide for integrating your custom `Problem_Solutions.pdf` with the sequential AI team for enhanced problem-solving.
 
 ## 🎯 Overview
 
-The PDF knowledge base allows your AI agents to reference documented problem-solution pairs from your `Problem_Solutions.pdf` file, providing more accurate and consistent failure analysis.
+The PDF knowledge base allows your AI agents to reference documented problem-solution pairs from your `Problem_Solutions.pdf` file, providing more accurate and consistent failure analysis. The sequential AI team actively searches this knowledge base to find proven solutions before creating new ones.
+
+## 🤖 AI Team Integration
+
+The PDF knowledge base is used by the sequential AI team as follows:
+
+- **RootCauseAnalyst**: Searches for similar error patterns and documented solutions
+- **FixPlanner**: Finds proven solutions from your PDF documentation first
+- **Verifier**: Validates solutions against documented best practices
+
+This ensures that all solutions are based on your documented, proven methods rather than generic AI responses.
 
 ## 📋 Configuration
 
-### Basic PDF Configuration
+### Default Configuration (LanceDB + Ollama)
 ```json
 "pdf_knowledge": {
-  "path": "/path/to/Problem_Solutions.pdf",
+  "path": "./docs/Problem_Solutions.pdf",
   "vector_db": {
-    "type": "chroma",
-    "collection_name": "pdf_documents",
-    "persist_directory": "./chroma_db"
+    "type": "lancedb",
+    "table_name": "vectors",
+    "uri": "./lancedb"
+  },
+  "embedder": {
+    "type": "ollama",
+    "id": "nomic-embed-text"
   },
   "recreate": false,
   "upsert": true,
@@ -23,7 +37,7 @@ The PDF knowledge base allows your AI agents to reference documented problem-sol
 }
 ```
 
-### Advanced Configuration
+### Advanced Configuration (PgVector + OpenAI)
 ```json
 "pdf_knowledge": {
   "path": "/path/to/Problem_Solutions.pdf",
@@ -36,7 +50,7 @@ The PDF knowledge base allows your AI agents to reference documented problem-sol
     "type": "openai",
     "api_key": "your-embedder-api-key",
     "base_url": "https://api.openai.com/v1",
-    "model": "text-embedding-3-small"
+    "id": "text-embedding-3-small"
   },
   "recreate": false,
   "upsert": true,
