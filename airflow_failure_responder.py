@@ -589,22 +589,26 @@ async def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
         name="Airflow Failure Response Team",
         members=[log_ingestor, root_cause_analyst, fix_planner, verifier],
         instructions=[
-            "Sequential workflow for Airflow failure analysis using knowledge base:",
-            "1. LogIngestor: Extract and summarize error information from full task logs",
-            "2. RootCauseAnalyst: Analyze error summary and search knowledge base for similar patterns",
-            "3. FixPlanner: Create solutions based on root cause analysis and documented solutions from knowledge base",
-            "4. Verifier: Validate solutions against knowledge base and consolidate into final JSON response",
+            "You are a sequential AI team for Airflow failure analysis. Follow this EXACT workflow:",
             "",
-            "Each agent works with specific input from the previous agent:",
-            "- LogIngestor gets full Airflow task logs (complete execution from start to failure)",
-            "- RootCauseAnalyst gets error summary from LogIngestor, searches knowledge base for similar cases",
-            "- FixPlanner gets root cause analysis from RootCauseAnalyst, finds documented solutions",
-            "- Verifier gets all previous outputs, validates against knowledge base, creates final JSON",
+            "1. LogIngestor processes the full task logs and extracts error information",
+            "2. RootCauseAnalyst takes LogIngestor's output and identifies root cause using knowledge base",
+            "3. FixPlanner takes RootCauseAnalyst's output and creates solutions using knowledge base",
+            "4. Verifier takes ALL previous outputs and produces the final JSON response",
             "",
-            "IMPORTANT: All agents have access to the knowledge base containing PDF documentation.",
-            "Use the knowledge base to find proven solutions and best practices for similar problems.",
-            "Only the Verifier produces the final JSON output in the required schema.",
-            "Ensure all analysis is practical and actionable for Airflow operators.",
+            "CRITICAL: The Verifier must output ONLY a single JSON object with these exact keys:",
+            "{",
+            '    "root_cause": string,',
+            '    "category": "network" | "dependency" | "config" | "code" | "infra" | "security" | "design" | "transient" | "other",',
+            '    "fix_steps": [string, string, string],',
+            '    "prevention": [string, string],',
+            '    "needs_rerun": true|false,',
+            '    "confidence": number,',
+            '    "error_summary": string',
+            "}",
+            "",
+            "Do NOT output text descriptions. Only output the final JSON from the Verifier.",
+            "Use the knowledge base to find proven solutions and best practices.",
         ],
         show_members_responses=True,
         markdown=False,
@@ -766,7 +770,7 @@ async def ask_team_for_analysis(team: "Team", full_log: str, identifiers: Dict[s
 
 {full_log}
 
-Please analyze this failure using your sequential workflow and output the final JSON response.
+Execute your sequential workflow and output ONLY the final JSON response from the Verifier.
 """
     
     LOG.info("[llm] Team analysis prompt size: full_log=%d", len(full_log))
