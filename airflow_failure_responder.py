@@ -758,31 +758,15 @@ Please analyze this failure using your sequential workflow and output the final 
     LOG.info("[llm] Team response received size=%d", len(text))
     
     # Parse the JSON response from the Verifier
-    try:
-        # Extract JSON from the response
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            json_str = text[start:end+1]
-            result = json.loads(json_str)
-            LOG.info("[llm] Successfully parsed JSON response from team")
-            return result
-        else:
-            LOG.warning("[llm] No valid JSON found in team response")
-            raise ValueError("No valid JSON found in team response")
-    except (json.JSONDecodeError, ValueError) as e:
-        LOG.error("[llm] Failed to parse team response as JSON: %s", e)
-        # Fallback to basic response
-        return {
-            "root_cause": "Failed to parse team analysis",
-            "category": "other",
-            "fix_steps": ["Review the raw team response", "Manually analyze the failure"],
-            "prevention": ["Improve team response parsing", "Check team configuration"],
-            "needs_rerun": True,
-            "confidence": 0.1,
-            "error_summary": text[:200] if text else "Team analysis failed",
-            "raw_response": text
-        }
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        json_str = text[start:end+1]
+        result = json.loads(json_str)
+        LOG.info("[llm] Successfully parsed JSON response from team")
+        return result
+    else:
+        raise ValueError("No valid JSON found in team response")
 
 
 async def ask_llm_for_analysis(agent: "Agent", error_focus: str, log_tail: str, identifiers: Dict[str, Any]) -> Dict[str, Any]:
