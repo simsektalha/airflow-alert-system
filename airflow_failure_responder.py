@@ -307,7 +307,7 @@ Return ONLY a single JSON object with EXACTLY these keys:
 - Do NOT wrap in markdown; output raw JSON only.
 """.strip()
 
-def setup_pdf_knowledge_base(cfg: Dict[str, Any]) -> Optional["Knowledge"]:
+async def setup_pdf_knowledge_base(cfg: Dict[str, Any]) -> Optional["Knowledge"]:
     """Set up PDF knowledge base from configuration using Agno 2.0.3 API."""
     if Knowledge is None:
         LOG.info("[pdf] Knowledge class not available; skipping")
@@ -418,7 +418,7 @@ def setup_pdf_knowledge_base(cfg: Dict[str, Any]) -> Optional["Knowledge"]:
         
         # Load the knowledge base
         LOG.info("[pdf] Loading PDF knowledge base from: %s", pdf_path)
-        pdf_kb.add_content(path=pdf_path)
+        await pdf_kb.add_content_async(path=pdf_path)
         
         LOG.info("[pdf] PDF knowledge base loaded successfully")
         return pdf_kb
@@ -436,7 +436,7 @@ def setup_pdf_knowledge_base(cfg: Dict[str, Any]) -> Optional["Knowledge"]:
         LOG.exception("[pdf] Failed to setup PDF knowledge base: %s", e)
         return None
 
-def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
+async def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
     """Build a Team for collaborative failure analysis."""
     if Agent is None or Team is None:
         LOG.info("[llm] agno not installed; skipping Team")
@@ -473,7 +473,7 @@ def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
         return None
 
     # Set up PDF knowledge base
-    pdf_kb = setup_pdf_knowledge_base(cfg)
+    pdf_kb = await setup_pdf_knowledge_base(cfg)
     if pdf_kb:
         LOG.info("[pdf] PDF knowledge base available for agents")
 
@@ -1052,7 +1052,7 @@ async def main_async() -> None:
     LOG.info("[parse] processed_log_len=%d", len(processed_log))
 
 # 3) Analyze with Team (or fallback to single agent)
-    team = build_team_from_cfg(cfg)
+    team = await build_team_from_cfg(cfg)
     agent = build_agent_from_cfg(cfg)
     
     LOG.info("[llm] Team available=%s, Single Agent available=%s", bool(team), bool(agent))
