@@ -51,6 +51,7 @@ try:
     from agno.knowledge.pdf import PDFKnowledgeBase, PDFReader
     from agno.vectordb.pgvector import PgVector
     from agno.vectordb.chroma import Chroma
+    from agno.vectordb.lancedb import LanceDb
     from agno.vectordb.base import SearchType
     from agno.embedder.openai import OpenAIEmbedder
     from agno.embedder.ollama import OllamaEmbedder
@@ -59,6 +60,7 @@ except Exception:
     PDFReader = None
     PgVector = None
     Chroma = None
+    LanceDb = None
     SearchType = None
     OpenAIEmbedder = None
     OllamaEmbedder = None
@@ -311,6 +313,12 @@ def setup_pdf_knowledge_base(cfg: Dict[str, Any]) -> Optional["PDFKnowledgeBase"
             vector_db = Chroma(
                 collection_name=vector_db_config.get("collection_name", "pdf_documents"),
                 persist_directory=vector_db_config.get("persist_directory", "./chroma_db"),
+            )
+        elif vector_db_type in ("lancedb", "lance", "lance_db") and LanceDb:
+            # LanceDB local, file-based vector store
+            vector_db = LanceDb(
+                table_name=vector_db_config.get("table_name", "vectors"),
+                uri=vector_db_config.get("uri", "./lancedb"),
             )
         
         if vector_db is None:
