@@ -47,23 +47,40 @@ try:
 except Exception:
     Ollama = None  # type: ignore
 
+# Agno 2.0.3 imports
 try:
-    from agno.knowledge.pdf import PDFKnowledgeBase, PDFReader
-    from agno.vectordb.pgvector import PgVector
-    from agno.vectordb.chroma import Chroma
-    from agno.vectordb.lancedb import LanceDb
-    from agno.vectordb.base import SearchType
-    from agno.embedder.openai import OpenAIEmbedder
-    from agno.embedder.ollama import OllamaEmbedder
+    from agno.knowledge import Knowledge
+    from agno.knowledge.embedder.openai import OpenAIEmbedder
+    from agno.knowledge.embedder.ollama import OllamaEmbedder
 except Exception:
-    PDFKnowledgeBase = None
-    PDFReader = None
-    PgVector = None
-    Chroma = None
-    LanceDb = None
-    SearchType = None
+    Knowledge = None
     OpenAIEmbedder = None
     OllamaEmbedder = None
+
+# Vector databases (separate imports due to optional dependencies)
+try:
+    from agno.vectordb.pgvector import PgVector
+except Exception:
+    PgVector = None
+
+try:
+    from agno.vectordb.chroma import Chroma
+except Exception:
+    Chroma = None
+
+try:
+    from agno.vectordb.lancedb import LanceDb, SearchType
+except Exception:
+    LanceDb = None
+    SearchType = None
+
+# SearchType enum fallback
+if SearchType is None:
+    from enum import Enum
+    class SearchType(Enum):
+        SIMILARITY = 'similarity'
+        HYBRID = 'hybrid'
+        MMR = 'mmr'
 
 
 # ---------- Redaction ----------
@@ -281,10 +298,10 @@ Return ONLY a single JSON object with EXACTLY these keys:
 - Do NOT wrap in markdown; output raw JSON only.
 """.strip()
 
-def setup_pdf_knowledge_base(cfg: Dict[str, Any]) -> Optional["PDFKnowledgeBase"]:
-    """Set up PDF knowledge base from configuration."""
-    if PDFKnowledgeBase is None or PDFReader is None:
-        LOG.info("[pdf] PDF knowledge base not available; skipping")
+def setup_pdf_knowledge_base(cfg: Dict[str, Any]) -> Optional["Knowledge"]:
+    """Set up PDF knowledge base from configuration using Agno 2.0.3 API."""
+    if Knowledge is None:
+        LOG.info("[pdf] Knowledge class not available; skipping")
         return None
     
     pdf_config = cfg.get("pdf_knowledge", {})
@@ -303,29 +320,7 @@ def setup_pdf_knowledge_base(cfg: Dict[str, Any]) -> Optional["PDFKnowledgeBase"
         vector_db_config = pdf_config.get("vector_db", {})
         vector_db_type = vector_db_config.get("type", "chroma")
         
-        vector_db = None
-        if vector_db_type == "pgvector" and PgVector:
-            vector_db = PgVector(
-                table_name=vector_db_config.get("table_name", "pdf_documents"),
-                db_url=vector_db_config.get("db_url", "postgresql+psycopg://ai:ai@localhost:5532/ai"),
-            )
-        elif vector_db_type == "chroma" and Chroma:
-            vector_db = Chroma(
-                collection_name=vector_db_config.get("collection_name", "pdf_documents"),
-                persist_directory=vector_db_config.get("persist_directory", "./chroma_db"),
-            )
-        elif vector_db_type in ("lancedb", "lance", "lance_db") and LanceDb:
-            # LanceDB local, file-based vector store
-            vector_db = LanceDb(
-                table_name=vector_db_config.get("table_name", "vectors"),
-                uri=vector_db_config.get("uri", "./lancedb"),
-            )
-        
-        if vector_db is None:
-            LOG.warning("[pdf] No vector database configured; using default Chroma")
-            vector_db = Chroma(collection_name="pdf_documents", persist_directory="./chroma_db")
-        
-        # Configure embedder
+        # Configure embedder first (needed for vector database)
         embedder_config = pdf_config.get("embedder", {})
         embedder_type = embedder_config.get("type", "openai")
         embedder = None
@@ -356,22 +351,54 @@ def setup_pdf_knowledge_base(cfg: Dict[str, Any]) -> Optional["PDFKnowledgeBase"
                     embedder_config.get("model", "embedding"), 
                     embedder_config["base_url"])
         
-        # Create PDF knowledge base with hybrid search
-        pdf_kb = PDFKnowledgeBase(
-            path=pdf_path,
+        # Configure vector database with embedder
+        vector_db = None
+        if vector_db_type == "pgvector" and PgVector:
+            vector_db = PgVector(
+                table_name=vector_db_config.get("table_name", "pdf_documents"),
+                db_url=vector_db_config.get("db_url", "postgresql+psycopg://ai:ai@localhost:5532/ai"),
+                embedder=embedder,
+            )
+        elif vector_db_type == "chroma" and Chroma:
+            vector_db = Chroma(
+                collection_name=vector_db_config.get("collection_name", "pdf_documents"),
+                persist_directory=vector_db_config.get("persist_directory", "./chroma_db"),
+                embedder=embedder,
+            )
+        elif vector_db_type in ("lancedb", "lance", "lance_db") and LanceDb:
+            # LanceDB local, file-based vector store
+            vector_db = LanceDb(
+                table_name=vector_db_config.get("table_name", "vectors"),
+                uri=vector_db_config.get("uri", "./lancedb"),
+                embedder=embedder,
+            )
+        
+        if vector_db is None:
+            LOG.warning("[pdf] No vector database configured; using default Chroma")
+            if Chroma:
+                vector_db = Chroma(
+                    collection_name="pdf_documents", 
+                    persist_directory="./chroma_db",
+                    embedder=embedder,
+                )
+            else:
+                LOG.warning("[pdf] Chroma not available; creating knowledge base without vector DB")
+        
+        
+        # Create Knowledge instance with Agno 2.0.3 API
+        pdf_kb = Knowledge(
+            name="pdf_knowledge_base",
             vector_db=vector_db,
-            reader=PDFReader(chunk=True),
-            search_type=SearchType.hybrid if SearchType else None,
-            embedder=embedder,
         )
+        
+        # Add PDF reader
+        pdf_reader = pdf_kb.pdf_reader
+        pdf_reader.chunk = True  # Enable chunking
+        pdf_kb.add_reader(pdf_reader)
         
         # Load the knowledge base
         LOG.info("[pdf] Loading PDF knowledge base from: %s", pdf_path)
-        pdf_kb.load(
-            recreate=pdf_config.get("recreate", False),
-            upsert=pdf_config.get("upsert", True),
-            async_load=pdf_config.get("async_load", False)
-        )
+        pdf_kb.add_content(path=pdf_path)
         
         LOG.info("[pdf] PDF knowledge base loaded successfully")
         return pdf_kb
