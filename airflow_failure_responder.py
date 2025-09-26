@@ -734,61 +734,22 @@ Example output
 
 async def ask_team_for_analysis(team: "Team", error_focus: str, log_tail: str, identifiers: Dict[str, Any]) -> Dict[str, Any]:
     """Ask the team for sequential analysis workflow."""
+    # Simple prompt since team already has detailed instructions
     prompt = f"""
-# Airflow Failure Analysis Request
+# Airflow Failure Analysis
 
-## Context
-- **DAG ID**: {identifiers.get('dag_id', 'Unknown')}
-- **DAG Run ID**: {identifiers.get('dag_run_id', 'Unknown')}
-- **Task ID**: {identifiers.get('task_id', 'Unknown')}
-- **Try Number**: {identifiers.get('try_number', 'Unknown')}
+**DAG ID**: {identifiers.get('dag_id', 'Unknown')}
+**Task ID**: {identifiers.get('task_id', 'Unknown')}
 
 ## Raw Airflow Logs
 
-### Error Focus (Critical Error Information)
+**Error Focus:**
 {error_focus}
 
-### Log Tail (Recent Log Entries)
+**Log Tail:**
 {log_tail}
 
-## Sequential Analysis Workflow
-
-Please follow this sequential process:
-
-1. **LogIngestor**: Extract only error-related information from the raw logs
-   - Filter out non-error entries (info, debug, success messages)
-   - Extract error messages, stack traces, failing operators
-   - Provide clean error summary (max 10 lines)
-
-2. **RootCauseAnalyst**: Analyze the error summary to identify root cause
-   - Take the error summary from LogIngestor
-   - Identify the PRIMARY root cause (not symptoms)
-   - Determine category: network, dependency, config, code, infra, security, design, transient, other
-   - Provide confidence level (0.0-1.0)
-
-3. **FixPlanner**: Create solution based on root cause analysis
-   - Take the root cause analysis from RootCauseAnalyst
-   - Provide 3-7 specific, actionable fix steps
-   - Include 2-6 prevention measures
-   - Determine if task needs rerun after fixes
-
-4. **Verifier**: Consolidate all inputs into final JSON response
-   - Take outputs from all previous agents
-   - Verify logical consistency
-   - Output final JSON in required schema format
-
-The Verifier must output ONLY a single JSON object with these exact keys:
-{{
-    "root_cause": string,
-    "category": "network" | "dependency" | "config" | "code" | "infra" | "security" | "design" | "transient" | "other",
-    "fix_steps": [string, string, string],
-    "prevention": [string, string],
-    "needs_rerun": true|false,
-    "confidence": number,
-    "error_summary": string
-}}
-
-Focus on practical, actionable solutions that Airflow operators can implement immediately.
+Please analyze this failure using your sequential workflow and output the final JSON response.
 """
     
     LOG.info("[llm] Team analysis prompt sizes: error_focus=%d, tail=%d", len(error_focus), len(log_tail))
@@ -796,27 +757,32 @@ Focus on practical, actionable solutions that Airflow operators can implement im
     text = getattr(resp, "content", "") if resp else ""
     LOG.info("[llm] Team response received size=%d", len(text))
     
-    # Parse the team response to extract structured information
-    # For now, create a structured response based on the team output
-    return {
-        "root_cause": text[:500] if text else "Team analysis completed",
-        "category": "other",
-        "fix_steps": [
-            "Review the team's collaborative analysis",
-            "Implement the suggested fix steps",
-            "Apply prevention measures",
-            "Monitor for similar issues"
-        ],
-        "prevention": [
-            "Use team analysis for future failures",
-            "Implement suggested monitoring",
-            "Regular system health checks"
-        ],
-        "needs_rerun": True,
-        "confidence": 0.85,  # Higher confidence due to team collaboration
-        "error_summary": text[:200] if text else "Team collaborative analysis completed",
-        "team_analysis": text  # Include full team analysis
-    }
+    # Parse the JSON response from the Verifier
+    try:
+        # Extract JSON from the response
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            json_str = text[start:end+1]
+            result = json.loads(json_str)
+            LOG.info("[llm] Successfully parsed JSON response from team")
+            return result
+        else:
+            LOG.warning("[llm] No valid JSON found in team response")
+            raise ValueError("No valid JSON found in team response")
+    except (json.JSONDecodeError, ValueError) as e:
+        LOG.error("[llm] Failed to parse team response as JSON: %s", e)
+        # Fallback to basic response
+        return {
+            "root_cause": "Failed to parse team analysis",
+            "category": "other",
+            "fix_steps": ["Review the raw team response", "Manually analyze the failure"],
+            "prevention": ["Improve team response parsing", "Check team configuration"],
+            "needs_rerun": True,
+            "confidence": 0.1,
+            "error_summary": text[:200] if text else "Team analysis failed",
+            "raw_response": text
+        }
 
 
 async def ask_llm_for_analysis(agent: "Agent", error_focus: str, log_tail: str, identifiers: Dict[str, Any]) -> Dict[str, Any]:
