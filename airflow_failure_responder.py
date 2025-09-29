@@ -89,14 +89,14 @@ class KnowledgeSource(BaseModel):
     """Represents a single knowledge artifact used to ground the answer.
 
     Attributes:
-        title: Human-readable title of the source document or section.
-        url: Public URL or file path identifying the source when available.
+        title: Human-readable title of the source document or section (e.g., PDF filename).
+        path: Local or network file path for the PDF when available.
         page: 1-based page number in the PDF if applicable.
         chunk_id: Implementation-defined chunk identifier within the vector store.
         snippet: Short excerpt that was retrieved and used for grounding.
     """
     title: str
-    url: Optional[str] = None
+    path: Optional[str] = None
     page: Optional[int] = None
     chunk_id: Optional[str] = None
     snippet: Optional[str] = None
@@ -608,7 +608,7 @@ async def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
                 "knowledge_sources": [
                     {
                         "title": string,
-                        "url": string | null,
+                        "path": string | null,
                         "page": number | null,
                         "chunk_id": string | null,
                         "snippet": string | null
@@ -619,9 +619,9 @@ async def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
             "- 'prevention' should be 2-6 items.",
             "- 'confidence' is 0.0-1.0.",
             "- Do NOT wrap in markdown; output raw JSON only.",
-            "- Validate solutions against your knowledge base documentation.",
-            "- Set 'used_knowledge' to true if any knowledge search/tool call was used; otherwise false.",
-            "- If 'used_knowledge' is true, populate 'knowledge_sources' with the key sources consulted.",
+            "- Validate solutions against your Knowledge base documentation.",
+            "- Set 'used_knowledge' to true if any Knowledge in Vector DB given in Knowledge was used; otherwise false.",
+            "- If 'used_knowledge' is true, populate 'knowledge_sources' with the consulted PDF sources in Vector DB given in Knowledge only.",
             "- Keep 'snippet' short (<= 280 chars) and redact secrets.",
         ],
         knowledge=pdf_kb,
@@ -640,11 +640,11 @@ async def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
             "You are a sequential AI team for Airflow failure analysis. Follow this EXACT workflow:",
             "",
             "1. LogIngestor processes the full task logs and extracts error information",
-            "2. RootCauseAnalyst takes LogIngestor's output and identifies root cause using knowledge base",
-            "3. FixPlanner takes RootCauseAnalyst's output and creates solutions using knowledge base",
+            "2. RootCauseAnalyst takes LogIngestor's output and identifies root cause using Knowledge base",
+            "3. FixPlanner takes RootCauseAnalyst's output and creates solutions using Knowledge base",
             "4. Verifier takes ALL previous outputs and produces the final structured response",
             "",
-            "Use the knowledge base to find proven solutions and best practices.",
+            "Use the Knowledge base to find proven solutions and best practices.",
             "The output will be automatically structured according to the schema.",
         ],
         show_members_responses=True,
