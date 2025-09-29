@@ -509,7 +509,6 @@ async def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
         ],
         knowledge=pdf_kb,
         search_knowledge=True,
-        show_tool_calls=True,
         add_knowledge_to_context=False,
         markdown=False,
     )
@@ -534,7 +533,6 @@ async def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
         ],
         knowledge=pdf_kb,
         search_knowledge=True,
-        show_tool_calls=True,
         add_knowledge_to_context=False,
         markdown=False,
     )
@@ -560,7 +558,6 @@ async def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
         ],
         knowledge=pdf_kb,
         search_knowledge=True,
-        show_tool_calls=True,
         add_knowledge_to_context=False,
         markdown=False,
     )
@@ -601,7 +598,6 @@ async def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
         ],
         knowledge=pdf_kb,
         search_knowledge=True,
-        show_tool_calls=True,
         add_knowledge_to_context=False,
         markdown=False,
     )
