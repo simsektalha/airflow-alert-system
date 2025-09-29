@@ -85,6 +85,22 @@ if SearchType is None:
 
 
 # ---------- Pydantic Models ----------
+class KnowledgeSource(BaseModel):
+    """Represents a single knowledge artifact used to ground the answer.
+
+    Attributes:
+        title: Human-readable title of the source document or section.
+        url: Public URL or file path identifying the source when available.
+        page: 1-based page number in the PDF if applicable.
+        chunk_id: Implementation-defined chunk identifier within the vector store.
+        snippet: Short excerpt that was retrieved and used for grounding.
+    """
+    title: str
+    url: Optional[str] = None
+    page: Optional[int] = None
+    chunk_id: Optional[str] = None
+    snippet: Optional[str] = None
+
 class AirflowFailureAnalysis(BaseModel):
     """Pydantic model for Airflow failure analysis output."""
     root_cause: str
@@ -95,6 +111,7 @@ class AirflowFailureAnalysis(BaseModel):
     confidence: float
     error_summary: str
     used_knowledge: bool
+    knowledge_sources: Optional[List[KnowledgeSource]] = None
 
 # ---------- Redaction ----------
 SECRET_PATTERNS = [
@@ -509,7 +526,6 @@ async def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
         ],
         knowledge=pdf_kb,
         search_knowledge=True,
-        show_tool_calls=True,
         add_knowledge_to_context=False,
         markdown=False,
     )
@@ -534,7 +550,6 @@ async def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
         ],
         knowledge=pdf_kb,
         search_knowledge=True,
-        show_tool_calls=True,
         add_knowledge_to_context=False,
         markdown=False,
     )
@@ -560,7 +575,6 @@ async def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
         ],
         knowledge=pdf_kb,
         search_knowledge=True,
-        show_tool_calls=True,
         add_knowledge_to_context=False,
         markdown=False,
     )
@@ -590,7 +604,16 @@ async def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
                 "needs_rerun": true|false,
                 "confidence": number,
                 "error_summary": string,
-                "used_knowledge": true|false
+                "used_knowledge": true|false,
+                "knowledge_sources": [
+                    {
+                        "title": string,
+                        "url": string | null,
+                        "page": number | null,
+                        "chunk_id": string | null,
+                        "snippet": string | null
+                    }
+                ] | null
             }""",
             "- 'fix_steps' should be 3-7 items. don't use numbers in the list.",
             "- 'prevention' should be 2-6 items.",
@@ -598,10 +621,11 @@ async def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
             "- Do NOT wrap in markdown; output raw JSON only.",
             "- Validate solutions against your knowledge base documentation.",
             "- Set 'used_knowledge' to true if any knowledge search/tool call was used; otherwise false.",
+            "- If 'used_knowledge' is true, populate 'knowledge_sources' with the key sources consulted.",
+            "- Keep 'snippet' short (<= 280 chars) and redact secrets.",
         ],
         knowledge=pdf_kb,
         search_knowledge=True,
-        show_tool_calls=True,
         add_knowledge_to_context=False,
         markdown=False,
     )
