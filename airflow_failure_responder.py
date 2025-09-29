@@ -94,6 +94,7 @@ class AirflowFailureAnalysis(BaseModel):
     needs_rerun: bool
     confidence: float
     error_summary: str
+    used_knowledge: bool
 
 # ---------- Redaction ----------
 SECRET_PATTERNS = [
@@ -588,13 +589,15 @@ async def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
             '    "prevention": [string, string],',
             '    "needs_rerun": true|false,',
             '    "confidence": number,',
-            '    "error_summary": string',
+            '    "error_summary": string,',
+            '    "used_knowledge": true|false',
             "}",
             "- 'fix_steps' should be 3-7 items.",
             "- 'prevention' should be 2-6 items.",
             "- 'confidence' is 0.0-1.0.",
             "- Do NOT wrap in markdown; output raw JSON only.",
             "- Validate solutions against your knowledge base documentation.",
+            "- Set 'used_knowledge' to true if any knowledge search/tool call was used; otherwise false.",
         ],
         knowledge=pdf_kb,
         search_knowledge=True,
