@@ -273,21 +273,11 @@ async def fetch_log_by_url(
     verify: Any,
     connect_timeout: float,
     total_timeout: float,
-    *,
-    max_pages: int = 200,
-    max_bytes: int = 5_000_000,
 ) -> str:
     """
-    Fetch the task's log via the v1 Logs endpoint, handling:
-      - full_content=true first page
-      - continuation_token paging
-      - loop guards (repeating token or repeating content)
-      - max pages/bytes safety limits
+    Fetch the task's log via the v1 Logs endpoint
     """
     params: Dict[str, Any] = {"full_content": "true"}
-    out_parts: List[str] = []
-    seen_tokens: set = set()
-    last_chunk_hash: Optional[int] = None
     timeout = httpx.Timeout(total_timeout, connect=connect_timeout)
 
     async with httpx.AsyncClient(
@@ -297,88 +287,37 @@ async def fetch_log_by_url(
         headers={"Accept": "application/json"},
     ) as client:
         LOG.info("[fetch] GET %s params=%s", log_url, params)
-        t0 = time.time()
-        page = 0
-        total_len = 0
-        while True:
-            page += 1
-            if page > max_pages:
-                LOG.warning("[fetch] stopping due to max_pages=%d", max_pages)
-                break
+        resp = await client.get(log_url, params=params)
+        LOG.info("[fetch] status=%s content-type=%s len=%s", 
+                    resp.status_code, resp.headers.get("Content-Type"), len(resp.content) if resp.content else 0)
 
-            r = await client.get(log_url, params=params)
-            LOG.info(
-                "[fetch] page=%d status=%s content-type=%s len=%s",
-                page, r.status_code, r.headers.get("Content-Type"),
-                len(r.content) if r.content else 0,
-            )
+        if resp.status_code >= 400:
+            raise RuntimeError(f"GET {log_url} failed: {resp.status_code} {resp.text[:200]}")
 
-            if r.status_code >= 400:
-                raise RuntimeError(f"GET {log_url} failed: {r.status_code} {r.text[:200]}")
+        ctype = (resp.headers.get("Content-Type") or "").lower()
+        
+        if "json" in ctype:
+            try:
+                data = resp.json()
+            except Exception:
+                LOG.warning("[fetch] JSON parse failed, falling back to text")
+                chunk = resp.text or ""
 
-            ctype = (r.headers.get("Content-Type") or "").lower()
-            if "json" in ctype:
+            content = data.get("content")
+            if isinstance(content, str):
                 try:
-                    data = r.json()
+                    content = codecs.escape_decode(content.encode("utf-8"))[0].decode("utf-8")
                 except Exception:
-                    LOG.warning("[fetch] JSON parse failed, falling back to text")
-                    chunk = r.text or ""
-                    out_parts.append(chunk)
-                    total_len += len(chunk)
-                    break
+                    pass
+                return content
+            elif isinstance(content, list):
+                return "".join(str(x) for x in content)
+            else:
+                return resp.text or ""
 
-                content = data.get("content")
-                if isinstance(content, str):
-                    # Airflow returns escaped text sometimes; un-escape if possible.
-                    try:
-                        content = codecs.escape_decode(content.encode("utf-8"))[0].decode("utf-8")
-                    except Exception:
-                        pass
-                elif isinstance(content, list):
-                    content = "".join(str(x) for x in content)
-
-                chunk = "" if content is None else str(content)
-                out_parts.append(chunk)
-                total_len += len(chunk)
-                token = data.get("continuation_token")
-                LOG.info("[fetch] page=%d token_present=%s total_len=%d", page, bool(token), total_len)
-
-                # Stop if token is exhausted
-                if not token:
-                    break
-
-                # Loop guard 1: repeating token
-                if token in seen_tokens:
-                    LOG.warning("[fetch] repeating token detected; breaking pagination")
-                    break
-                seen_tokens.add(token)
-
-                # Loop guard 2: repeating content
-                h = hash(chunk)
-                if last_chunk_hash is not None and h == last_chunk_hash:
-                    LOG.warning("[fetch] repeated content chunk; breaking pagination")
-                    break
-                last_chunk_hash = h
-
-                # Safety limit
-                if total_len >= max_bytes:
-                    LOG.warning("[fetch] stopping due to max_bytes=%d", max_bytes)
-                    break
-
-                # Next page: only the token (do not include full_content again)
-                params = {"token": token}
-                continue
-
-            # text/plain fallback (non-chunked)
-            LOG.info("[fetch] chunk-ok text/plain")
-            chunk = r.text or ""
-            out_parts.append(chunk)
-            total_len += len(chunk)
-            break
-
-        LOG.info("[fetch] completed in %.2fs, pages=%d, total_len=%d",
-                 time.time() - t0, page, total_len)
-        return "".join(out_parts)
+        LOG.info("[fetch] text/plain returned")
+        return resp.text or ""
+        
 
 
 # ---------- LLM ----------
