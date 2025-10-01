@@ -273,21 +273,11 @@ async def fetch_log_by_url(
     verify: Any,
     connect_timeout: float,
     total_timeout: float,
-    *,
-    max_pages: int = 200,
-    max_bytes: int = 5_000_000,
 ) -> str:
     """
-    Fetch the task's log via the v1 Logs endpoint, handling:
-      - full_content=true first page
-      - continuation_token paging
-      - loop guards (repeating token or repeating content)
-      - max pages/bytes safety limits
+    Fetch the task's log via the v1 Logs endpoint
     """
     params: Dict[str, Any] = {"full_content": "true"}
-    out_parts: List[str] = []
-    seen_tokens: set = set()
-    last_chunk_hash: Optional[int] = None
     timeout = httpx.Timeout(total_timeout, connect=connect_timeout)
 
     async with httpx.AsyncClient(
@@ -297,109 +287,40 @@ async def fetch_log_by_url(
         headers={"Accept": "application/json"},
     ) as client:
         LOG.info("[fetch] GET %s params=%s", log_url, params)
-        t0 = time.time()
-        page = 0
-        total_len = 0
-        while True:
-            page += 1
-            if page > max_pages:
-                LOG.warning("[fetch] stopping due to max_pages=%d", max_pages)
-                break
+        resp = await client.get(log_url, params=params)
+        LOG.info("[fetch] status=%s content-type=%s len=%s", 
+                    resp.status_code, resp.headers.get("Content-Type"), len(resp.content) if resp.content else 0)
 
-            r = await client.get(log_url, params=params)
-            LOG.info(
-                "[fetch] page=%d status=%s content-type=%s len=%s",
-                page, r.status_code, r.headers.get("Content-Type"),
-                len(r.content) if r.content else 0,
-            )
+        if resp.status_code >= 400:
+            raise RuntimeError(f"GET {log_url} failed: {resp.status_code} {resp.text[:200]}")
 
-            if r.status_code >= 400:
-                raise RuntimeError(f"GET {log_url} failed: {r.status_code} {r.text[:200]}")
+        ctype = (resp.headers.get("Content-Type") or "").lower()
+        
+        if "json" in ctype:
+            try:
+                data = resp.json()
+            except Exception:
+                LOG.warning("[fetch] JSON parse failed, falling back to text")
+                chunk = resp.text or ""
 
-            ctype = (r.headers.get("Content-Type") or "").lower()
-            if "json" in ctype:
+            content = data.get("content")
+            if isinstance(content, str):
                 try:
-                    data = r.json()
+                    content = codecs.escape_decode(content.encode("utf-8"))[0].decode("utf-8")
                 except Exception:
-                    LOG.warning("[fetch] JSON parse failed, falling back to text")
-                    chunk = r.text or ""
-                    out_parts.append(chunk)
-                    total_len += len(chunk)
-                    break
+                    pass
+                return content
+            elif isinstance(content, list):
+                return "".join(str(x) for x in content)
+            else:
+                return resp.text or ""
 
-                content = data.get("content")
-                if isinstance(content, str):
-                    # Airflow returns escaped text sometimes; un-escape if possible.
-                    try:
-                        content = codecs.escape_decode(content.encode("utf-8"))[0].decode("utf-8")
-                    except Exception:
-                        pass
-                elif isinstance(content, list):
-                    content = "".join(str(x) for x in content)
-
-                chunk = "" if content is None else str(content)
-                out_parts.append(chunk)
-                total_len += len(chunk)
-                token = data.get("continuation_token")
-                LOG.info("[fetch] page=%d token_present=%s total_len=%d", page, bool(token), total_len)
-
-                # Stop if token is exhausted
-                if not token:
-                    break
-
-                # Loop guard 1: repeating token
-                if token in seen_tokens:
-                    LOG.warning("[fetch] repeating token detected; breaking pagination")
-                    break
-                seen_tokens.add(token)
-
-                # Loop guard 2: repeating content
-                h = hash(chunk)
-                if last_chunk_hash is not None and h == last_chunk_hash:
-                    LOG.warning("[fetch] repeated content chunk; breaking pagination")
-                    break
-                last_chunk_hash = h
-
-                # Safety limit
-                if total_len >= max_bytes:
-                    LOG.warning("[fetch] stopping due to max_bytes=%d", max_bytes)
-                    break
-
-                # Next page: only the token (do not include full_content again)
-                params = {"token": token}
-                continue
-
-            # text/plain fallback (non-chunked)
-            LOG.info("[fetch] chunk-ok text/plain")
-            chunk = r.text or ""
-            out_parts.append(chunk)
-            total_len += len(chunk)
-            break
-
-        LOG.info("[fetch] completed in %.2fs, pages=%d, total_len=%d",
-                 time.time() - t0, page, total_len)
-        return "".join(out_parts)
+        LOG.info("[fetch] text/plain returned")
+        return resp.text or ""
+        
 
 
 # ---------- LLM ----------
-GIVEN_SCHEMA = """
-Return ONLY a single JSON object with EXACTLY these keys:
-{
-    "root_cause": string,
-    "category": "network" | "dependency" | "config" | "code" | "infra" | "security" | "design" | "transient" | "other",
-    "fix_steps": [string, string, string],
-    "prevention": [string, string],
-    "needs_rerun": true|false,
-    "confidence": number,
-    "error_summary": string
-}
-- Keep answers concise and practical.
-- "fix_steps" should be 3-7 items (you may include up to 7).
-- "prevention" should be 2-6 items.
-- "confidence" is 0.0-1.0.
-- Do NOT wrap in markdown; output raw JSON only.
-""".strip()
-
 async def setup_pdf_knowledge_base(cfg: Dict[str, Any]) -> Optional["Knowledge"]:
     """Set up PDF knowledge base from configuration using Agno 2.0.3 API."""
     if Knowledge is None:
@@ -477,6 +398,7 @@ async def setup_pdf_knowledge_base(cfg: Dict[str, Any]) -> Optional["Knowledge"]
                 table_name=vector_db_config.get("table_name", "vectors"),
                 uri=vector_db_config.get("uri", "./lancedb"),
                 embedder=embedder,
+                search_type=SearchType.vector,
             )
         
         if vector_db is None:
@@ -538,8 +460,8 @@ async def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
     llm = cfg.get("llm") or {}
     driver = (llm.get("driver") or "openai_like").lower()
     model_id = llm.get("model") or "llama3.1"
-    temperature = float(llm.get("temperature") or 0.1)
-    max_tokens = int(llm.get("max_tokens") or 800)
+    temperature = float(llm.get("temperature") or 0)
+    max_tokens = int(llm.get("max_tokens") or 8000)
 
     # Build model
     model = None
@@ -586,6 +508,8 @@ async def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
             "5. Provide a concise summary of what went wrong (maximum 15 lines)",
             "Output: Clean error summary containing key failure information",
             "Do NOT analyze root causes or provide solutions - just extract and summarize what failed.",
+            "Extract a concise error summary from provided Airflow task logs (max 15 lines)",
+            "Output only plain text. do NOT output JSON, Markdown, code fences or metadata.",
         ],
         knowledge=pdf_kb,
         search_knowledge=True,
@@ -610,6 +534,7 @@ async def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
             "Output: Root cause analysis with category and confidence",
             "Use the knowledge base to find similar problems and their documented solutions.",
             "Do NOT provide solutions - just identify and categorize the problem.",
+            "Do NOT output JSON, Markdown, code fences or any list format.",
         ],
         knowledge=pdf_kb,
         search_knowledge=True,
@@ -657,7 +582,6 @@ async def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
             "5. Verify logical consistency between all inputs",
             "6. Ensure solutions are based on proven methods from your documentation",
             "7. Consolidate everything into the required JSON format",
-            "",
             "CRITICAL: You must output ONLY a single JSON object with EXACTLY these keys:",
             """{
                 "root_cause": string,
@@ -701,14 +625,12 @@ async def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
         output_schema=AirflowFailureAnalysis,
         instructions=[
             "You are a sequential AI team for Airflow failure analysis. Follow this EXACT workflow:",
-            "",
             "1. LogIngestor processes the full task logs and extracts error information",
             "2. RootCauseAnalyst takes LogIngestor's output and identifies root cause using Knowledge base",
             "3. FixPlanner takes RootCauseAnalyst's output and creates solutions using Knowledge base",
             "4. Verifier takes ALL previous outputs and produces the final structured response",
-            "",
             "Use the Knowledge base to find proven solutions and best practices.",
-            "The output will be automatically structured according to the schema.",
+            "Do NOT include any explanation or formatting outside the JSON in the final response.",
         ],
         show_members_responses=True,
         markdown=False,
