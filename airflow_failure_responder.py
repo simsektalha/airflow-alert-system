@@ -321,24 +321,6 @@ async def fetch_log_by_url(
 
 
 # ---------- LLM ----------
-GIVEN_SCHEMA = """
-Return ONLY a single JSON object with EXACTLY these keys:
-{
-    "root_cause": string,
-    "category": "network" | "dependency" | "config" | "code" | "infra" | "security" | "design" | "transient" | "other",
-    "fix_steps": [string, string, string],
-    "prevention": [string, string],
-    "needs_rerun": true|false,
-    "confidence": number,
-    "error_summary": string
-}
-- Keep answers concise and practical.
-- "fix_steps" should be 3-7 items (you may include up to 7).
-- "prevention" should be 2-6 items.
-- "confidence" is 0.0-1.0.
-- Do NOT wrap in markdown; output raw JSON only.
-""".strip()
-
 async def setup_pdf_knowledge_base(cfg: Dict[str, Any]) -> Optional["Knowledge"]:
     """Set up PDF knowledge base from configuration using Agno 2.0.3 API."""
     if Knowledge is None:
@@ -416,6 +398,7 @@ async def setup_pdf_knowledge_base(cfg: Dict[str, Any]) -> Optional["Knowledge"]
                 table_name=vector_db_config.get("table_name", "vectors"),
                 uri=vector_db_config.get("uri", "./lancedb"),
                 embedder=embedder,
+                search_type=SearchType.vector,
             )
         
         if vector_db is None:
@@ -477,8 +460,8 @@ async def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
     llm = cfg.get("llm") or {}
     driver = (llm.get("driver") or "openai_like").lower()
     model_id = llm.get("model") or "llama3.1"
-    temperature = float(llm.get("temperature") or 0.1)
-    max_tokens = int(llm.get("max_tokens") or 800)
+    temperature = float(llm.get("temperature") or 0)
+    max_tokens = int(llm.get("max_tokens") or 8000)
 
     # Build model
     model = None
@@ -525,6 +508,8 @@ async def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
             "5. Provide a concise summary of what went wrong (maximum 15 lines)",
             "Output: Clean error summary containing key failure information",
             "Do NOT analyze root causes or provide solutions - just extract and summarize what failed.",
+            "Extract a concise error summary from provided Airflow task logs (max 15 lines)",
+            "Output only plain text. do NOT output JSON, Markdown, code fences or metadata.",
         ],
         knowledge=pdf_kb,
         search_knowledge=True,
@@ -549,6 +534,7 @@ async def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
             "Output: Root cause analysis with category and confidence",
             "Use the knowledge base to find similar problems and their documented solutions.",
             "Do NOT provide solutions - just identify and categorize the problem.",
+            "Do NOT output JSON, Markdown, code fences or any list format.",
         ],
         knowledge=pdf_kb,
         search_knowledge=True,
@@ -596,7 +582,6 @@ async def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
             "5. Verify logical consistency between all inputs",
             "6. Ensure solutions are based on proven methods from your documentation",
             "7. Consolidate everything into the required JSON format",
-            "",
             "CRITICAL: You must output ONLY a single JSON object with EXACTLY these keys:",
             """{
                 "root_cause": string,
@@ -640,14 +625,12 @@ async def build_team_from_cfg(cfg: Dict[str, Any]) -> Optional["Team"]:
         output_schema=AirflowFailureAnalysis,
         instructions=[
             "You are a sequential AI team for Airflow failure analysis. Follow this EXACT workflow:",
-            "",
             "1. LogIngestor processes the full task logs and extracts error information",
             "2. RootCauseAnalyst takes LogIngestor's output and identifies root cause using Knowledge base",
             "3. FixPlanner takes RootCauseAnalyst's output and creates solutions using Knowledge base",
             "4. Verifier takes ALL previous outputs and produces the final structured response",
-            "",
             "Use the Knowledge base to find proven solutions and best practices.",
-            "The output will be automatically structured according to the schema.",
+            "Do NOT include any explanation or formatting outside the JSON in the final response.",
         ],
         show_members_responses=True,
         markdown=False,
