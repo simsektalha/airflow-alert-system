@@ -75,14 +75,6 @@ except Exception:
     LanceDb = None
     SearchType = None
 
-# SearchType enum fallback
-if SearchType is None:
-    from enum import Enum
-    class SearchType(Enum):
-        SIMILARITY = 'similarity'
-        HYBRID = 'hybrid'
-        MMR = 'mmr'
-
 
 # ---------- Pydantic Models ----------
 class KnowledgeSource(BaseModel):
@@ -175,6 +167,77 @@ def redact_text(s: str) -> str:
 
 
 # ---------- Log processing ----------
+def crop_log_window(log_text: str,
+                    *,
+                    start_hint: Optional[str] = None,
+                    end_hint: Optional[str] = None,
+                    max_chars: int = 50000):
+    """
+    Crop a long Airflow task log to the high-signal window.
+    """
+    if not log_text:
+        return ""
+    
+    lines = log_text.splitlines()
+
+    start_patterns = []
+    end_patterns = []
+
+    if start_hint:
+        start_patterns.append(re.escape(start_hint))
+    
+    else:
+        start_patterns.extend([
+            r"Using connection to",
+            r"Spark-submit cmd:",
+            r"Executing <Task\(SparkSubmitOperator\)",
+            r"Started process .* to run task",
+        ])
+    
+    if end_hint:
+        end_patterns.append(re.escape(end_hint))
+    
+    else:
+        end_patterns.extend([
+            r"Task exited with return code \d+",
+            r"Marking task as FAILED\.",
+            r"airflow\.exceptions\.AirflowException",
+        ])
+
+    start_idx = None
+    for i, line in enumerate(lines):
+        if any(re.search(pat, line) for pat in start_patterns):
+            start_idx = max(0, i)
+            break
+
+    end_idx = None
+    if start_idx is not None:
+        for j in range(start_idx, len(lines)):
+            if any(re.search(pat, lines[j]) for pat in end_patterns):
+                end_idx = min(len(lines) - 1, j)
+                break
+    
+    if start_idx is None or end_idx is None:
+        err_pat = re.compile(r"(Traceback|ERROR|CRITICAL|AnalysisException|AirflowException)", re.IGNORECASE)
+        err_line = None
+        for i in range(len(lines) - 1, -1, -1):
+            if err_pat.search(lines[i]):
+                err_line = i
+                break
+        
+        if err_line is None:
+            cropped = "\n".join(lines[-5000:])
+            return cropped[-max_chars:] if len(cropped) > max_chars else cropped
+
+    cropped_lines = lines[start_idx:end_idx + 1]
+    cropped = "\n".join(cropped_lines)
+
+    if len(cropped_lines) > max_chars:
+        cropped_lines = cropped_lines[-max_chars:]
+    
+    return cropped
+        
+
 def process_logs(full_log: str, max_chars: int = 50000) -> str:
     """
     Process full task logs with redaction and intelligent truncation.
