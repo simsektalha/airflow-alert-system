@@ -4,9 +4,10 @@ from pydantic import BaseModel, Field
 
 class AirflowFailureAnalysis(BaseModel):
     """
-    Yeni canonical model:
-    - used_docs: knowledge kaynaklarından türetilmiş kısa tek-satırlık string listesi (max 3)
-    - knowledge_fix_steps: bilgi (used_docs) varsa buradan türetilmiş adımlar
+    LLM çıktı şeması (response_format=json_schema ile gönderilir):
+    - used_doc_ids: prompt'ta verilen KNOWLEDGE kayıtlarından kullanılanların ID'leri (K1, K2...).
+      Kod bu ID'leri gerçek kayıtlara çevirir (used_docs/used_knowledge); LLM kaynak metni uyduramaz.
+    - knowledge_fix_steps: used_doc_ids doluysa o kayıtlardan türetilmiş adımlar
     - generic_fix_steps: LLM/uzman tavsiyeleri (knowledge ile çakışmamalı)
     """
 
@@ -18,9 +19,8 @@ class AirflowFailureAnalysis(BaseModel):
     root_cause: str = Field(..., description="Kök neden: semptom değil, hatayı başlatan asıl sebep (1-2 cümle)")
     confidence: float = Field(..., ge=0.0, le=1.0, description="0.0 - 1.0 arası güven")
 
-    used_knowledge: bool = Field(False, description="Knowledge kullanıldı mı?")
-    used_docs: List[str] = Field(
-        default_factory=list, description="Kısa tek-satırlık bilgi kayıtları (max 3)"
+    used_doc_ids: List[str] = Field(
+        default_factory=list, description="Kullanılan KNOWLEDGE kayıtlarının ID'leri (örn. K1), max 3"
     )
 
     knowledge_fix_steps: List[str] = Field(
