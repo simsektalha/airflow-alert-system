@@ -15,6 +15,7 @@ class AirflowFailureAnalysis(BaseModel):
         description='Kategoriler: "network","dependency","config","code","infra","security","design","transient","other"',
     )
     error_summary: str = Field(..., description="Bir cümlelik Türkçe hata özeti")
+    root_cause: str = Field(..., description="Kök neden: semptom değil, hatayı başlatan asıl sebep (1-2 cümle)")
     confidence: float = Field(..., ge=0.0, le=1.0, description="0.0 - 1.0 arası güven")
 
     used_knowledge: bool = Field(False, description="Knowledge kullanıldı mı?")

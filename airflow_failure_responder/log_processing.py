@@ -96,6 +96,17 @@ def crop_log_window(
     return cropped
 
 
+_ERR_LINE_RE = re.compile(r"(Exception|Error|Traceback|CRITICAL)\b", re.IGNORECASE)
+
+
+def last_error_line(log_text: str, max_len: int = 500) -> str:
+    """Return the last error-looking line (used for the fallback card when the LLM fails)."""
+    for line in reversed((log_text or "").splitlines()):
+        if _ERR_LINE_RE.search(line):
+            return line.strip()[:max_len]
+    return ""
+
+
 def process_logs(full_log: str, max_chars: int = 50000) -> str:
     """
     Process full task logs with redaction and intelligent truncation.

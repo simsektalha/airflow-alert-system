@@ -21,7 +21,8 @@ def build_agent_from_cfg(cfg: Dict[str, Any], kb: Optional["Knowledge"], knowled
     driver = (llm.get("driver") or "openai_like").lower()
     model_id = llm.get("model") or "llama3.1"
     temperature = float(llm.get("temperature") or 0.1)
-    max_tokens = int(llm.get("max_tokens") or 800)
+    # 800 truncated structured JSON in practice; 4000 leaves room for the full schema
+    max_tokens = int(llm.get("max_tokens") or 4000)
 
     model = None
     if driver == "openai_like" and OpenAILike and llm.get("base_url") and llm.get("api_key"):
@@ -131,6 +132,7 @@ JSON şu alanları içermelidir:
 
 {{
   "error_summary": string,
+  "root_cause": string,
   "category": string,
   "used_knowledge": boolean,
   "used_docs": [string],
@@ -148,6 +150,10 @@ ALAN KURALLARI
 
 error_summary:
 - Hatanın özünü tek cümlede açıkla
+
+root_cause:
+- Semptomu değil, hatayı başlatan asıl sebebi 1-2 cümlede yaz
+- Emin değilsen bunu belirt ve confidence'ı düşür
 
 category:
 - Şunlardan biri:

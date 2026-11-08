@@ -8,17 +8,13 @@ Behaviour:
   - POST {api_base_url}/auth/token -> get JWT
   - GET /api/v2/dags/{dag_id}/dagRuns/{run_id}/taskInstances/{task_id} with Bearer token -> extract try_number
   - Build logs URL (/api/v2/.../logs/{try})
-  - Invoke responder script with only:
-      --log-url <full log url>
-      --token <jwt>
-      --config-b64 <cfg with auth/base_url removed>
-  - No fallback, no BasicAuth reuse, no extra dag/task args passed along.
+  - Invoke responder script with --log-url and dag/run/task/try identifiers in argv,
+    and {"token": <jwt>, "config": <cfg without auth>} as JSON on stdin.
+    Secrets never go to argv (visible in `ps`) or to the task log.
+  - No fallback, no BasicAuth reuse.
 """
-import base64
-import copy
 import json
 import logging
-import shlex
 import subprocess
 import sys
 from typing import Tuple, Union
@@ -118,11 +114,8 @@ def _get_current_try_number_via_api_v2(base_url: str, token: str, verify: Union[
 
 def on_failure_trigger_fetcher(context):
     """
-    Single-method on_failure_callback. Produces command that passes:
-      --log-url <...>
-      --token <jwt>
-      --config-b64 <cfg without auth/base_url>
-    to the responder script.
+    Single-method on_failure_callback. Starts the responder script with
+    --log-url and identifiers in argv; token + reduced config go via stdin.
     """
     ti = context.get("ti") or context.get("task_instance")
     if not ti:
@@ -188,10 +181,11 @@ def on_failure_trigger_fetcher(context):
     )
 
     # responder script path (override allowed)
-    script_path = cfg.get("script_path") or "/usr/local/airflow/dags/airflow_failure_responder.py"
+    script_path = cfg.get("script_path") or "/usr/local/airflow/dags/airflow_failure_responder/airflow_failure_responder.py"
 
-    # Pass reduced config as base64
-    cfg_b64 = base64.b64encode(json.dumps(cfg).encode("utf-8")).decode("ascii")
+    # Responder needs base_url (UI links) but never the Airflow credentials
+    reduced_cfg = {k: v for k, v in cfg.items() if k != "auth"}
+    stdin_payload = json.dumps({"token": token, "config": reduced_cfg})
 
     # Invocation config (interpreter + mode)
     invoke_cfg = cfg.get("invoke") or {}
@@ -199,30 +193,29 @@ def on_failure_trigger_fetcher(context):
     mode = (invoke_cfg.get("mode") or "detach").lower()  # "detach" or "run"
     timeout_sec = int(invoke_cfg.get("timeout_sec") or 30)
 
-    # Build command: pass log-url, token, and reduced config only
+    # Build command: non-secret identifiers only
     cmd = [
         python_exec,
         script_path,
         "--log-url", log_url,
-        "--token", token,
-        "--config-b64", cfg_b64,
         "--dag-id", dag_id,
         "--dag-run-id", run_id,
         "--task-id", task_id,
         "--try-number", str(try_number_for_log),
     ]
 
-    # Safe logging only (do not print token). Print token length for debug if needed
+    # Safe logging only (do not print token or config)
     LOG.info("[invoke] python=%s script=%s dag_id=%s run_id=%s task_id=%s try=%s", python_exec, script_path, dag_id, run_id, task_id, try_number_for_log)
     LOG.info("[invoke] token_len=%d", len(token))
-    LOG.info("[invoke] command: %s", " ".join(shlex.quote(c) for c in cmd if c != token))  # avoid embedding token in logs
 
     # Invoke
     try:
         if mode == "run":
-            subprocess.run(cmd, check=False, timeout=timeout_sec)
+            subprocess.run(cmd, input=stdin_payload, text=True, check=False, timeout=timeout_sec)
         else:
-            # detach, start new session
-            subprocess.Popen(cmd, start_new_session=True)
+            # detach, start new session; child reads stdin first, so the write does not block for long
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, text=True, start_new_session=True)
+            proc.stdin.write(stdin_payload)
+            proc.stdin.close()
     except Exception:
         LOG.exception("Failed to invoke failure responder script")

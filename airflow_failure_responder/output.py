@@ -34,6 +34,7 @@ def _build_adaptive_card(result: Dict[str, Any], base_url) -> Dict[str, Any]:
     """
     analysis = result.get("analysis", {}) or {}
     error_summary = analysis.get("error_summary", "Unknown error")
+    root_cause = analysis.get("root_cause") or ""
     # Prefer canonical used_docs (short strings). Back-compat: accept 'evidence' if present.
     raw_used_docs = analysis.get("used_docs") or analysis.get("evidence") or []
     # Normalize used_docs -> list of short single-line strings (max 3 items)
@@ -195,8 +196,20 @@ def _build_adaptive_card(result: Dict[str, Any], base_url) -> Dict[str, Any]:
             ]
         },
         details_container,
-        {"type": "TextBlock", "text": "---", "separator": True, "spacing": "Medium"},
     ]
+
+    if root_cause:
+        body.append({
+            "type": "Container",
+            "style": "emphasis",
+            "spacing": "Medium",
+            "items": [
+                {"type": "TextBlock", "text": "🎯 Kök Neden", "weight": "Bolder", "size": "Default", "spacing": "None"},
+                {"type": "TextBlock", "text": _shorten(root_cause, 1000), "wrap": True, "spacing": "Small"},
+            ]
+        })
+
+    body.append({"type": "TextBlock", "text": "---", "separator": True, "spacing": "Medium"})
 
     # Order: Documents (used_docs) first (after header), then Knowledge steps, then Generic, then Prevention
     body.append(documents_section)

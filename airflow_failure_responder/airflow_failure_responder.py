@@ -5,9 +5,11 @@ Responder entrypoint.
 Expectations (per our agreed flow):
   - trigger_failure_responder.py obtains JWT and constructs full log_url,
     then invokes this script with:
-      --log-url <full-log-url> --token <jwt> --config-b64 <reduced-cfg-base64>
-  - reduced cfg should NOT contain auth/basic credentials nor api_base_url/base_url,
-    but may contain tls, timeouts, pagination, llm, output, knowledge, confluence, etc.
+      argv:  --log-url <full-log-url> [--dag-id ... --dag-run-id ... --task-id ... --try-number ...]
+      stdin: {"token": "<jwt>", "config": {<reduced cfg>}}
+  - reduced cfg does NOT contain auth/basic credentials,
+    but may contain base_url, tls, timeouts, pagination, llm, output, knowledge, confluence, etc.
+  - If fetching or LLM analysis fails, a fallback card (raw error line) is still sent.
 
 This script:
   - Decodes config
@@ -20,7 +22,6 @@ This script:
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 import sys
@@ -30,13 +31,12 @@ from typing import Any, Dict, Optional
 
 from logging_cfg import configure_logging, _mask
 from airflow_log_client import fetch_log_using_token, _derive_verify
-from log_processing import crop_log_window, process_logs
+from log_processing import crop_log_window, process_logs, last_error_line
 from knowledge import setup_knowledge_base, ingest_confluence_page_to_kb  # keep KB setup/ingest helpers
 from llm_agent import build_agent_from_cfg, ask_llm_for_analysis
 from output import output_to_stdout, output_to_file, output_to_teams
 from ssl_patch import apply_insecure_ssl_patch
 
-apply_insecure_ssl_patch()
 configure_logging()
 
 LOG = logging.getLogger("airflow-failure-responder")
@@ -47,9 +47,6 @@ async def main_async() -> None:
         description="Fetch a failed task's log (using provided token), parse/redact, analyze with LLM, and emit JSON."
     )
     p.add_argument("--log-url", required=True, help="Absolute Airflow v2 Logs endpoint for the failing attempt.")
-    p.add_argument("--token", required=True, help="Bearer JWT token acquired by the trigger.")
-    p.add_argument("--config-b64", required=True, help="Base64-encoded reduced JSON config (auth/base_url removed).")
-
     # Optional identifiers (trigger may omit these)
     p.add_argument("--dag-id", required=False, help="Optional DAG id (provided by trigger if available).")
     p.add_argument("--dag-run-id", required=False, help="Optional DAG run id.")
@@ -58,14 +55,21 @@ async def main_async() -> None:
 
     args = p.parse_args()
 
-    # Decode config
+    # Token + config come via stdin, never argv (argv is visible in `ps` and task logs)
     try:
-        cfg = json.loads(base64.b64decode(args.config_b64.encode("ascii")).decode("utf-8"))
+        payload = json.loads(sys.stdin.read())
+        cfg = payload["config"]
+        token = payload["token"]
     except Exception:
-        LOG.exception("Failed to decode --config-b64")
-        raise SystemExit("Invalid --config-b64")
+        LOG.exception("Failed to read {token, config} JSON from stdin")
+        raise SystemExit("Invalid stdin payload")
 
     LOG.info("[start] log_url=%s", args.log_url)
+
+    # shortcut: global TLS bypass kept as opt-in for hosts without the internal CA; prefer tls.verify=<ca path>
+    if (cfg.get("tls") or {}).get("insecure_global_patch"):
+        LOG.warning("[tls] insecure_global_patch enabled: TLS verification disabled process-wide")
+        apply_insecure_ssl_patch()
 
     # Safe config summary (no secrets)
     llm_cfg = cfg.get("llm", {})
@@ -90,9 +94,8 @@ async def main_async() -> None:
     max_bytes = int(pagination.get("max_bytes", 5_000_000))
 
     # Validate token presence (trigger should supply)
-    token = args.token
     if not token:
-        LOG.error("No token provided (trigger must pass --token)")
+        LOG.error("No token provided (trigger must pass it on stdin)")
         raise SystemExit("Missing token")
 
     # 1) Fetch full log using token (run blocking requests in thread)
@@ -107,8 +110,9 @@ async def main_async() -> None:
             max_bytes=max_bytes,
         )
     except Exception:
+        # Keep going: the team still gets a card even without the log
         LOG.exception("[fetch] Failed to fetch log from %s", args.log_url)
-        raise SystemExit("Failed to fetch log")
+        full_log = ""
 
     LOG.info("[parse] full_log_len=%d (%.2fs)", len(full_log), time.time() - t_fetch)
 
@@ -167,14 +171,21 @@ async def main_async() -> None:
 
     # 5) Ask LLM for analysis, pass the service-matched docs implicitly via agent filters
     try:
+        if agent is None:
+            raise RuntimeError("LLM agent not configured")
         analysis = await ask_llm_for_analysis(
             agent=agent,
             full_log=processed_log,
             identifiers=identifiers,
         )
     except Exception as e:
-        LOG.exception("[llm] LLM analysis failed")
-        raise SystemExit(f"[llm] LLM analysis failed: {e}")
+        # Never stay silent: send the raw error line instead of an LLM analysis
+        LOG.exception("[llm] LLM analysis failed; sending fallback card")
+        analysis = {
+            "error_summary": last_error_line(processed_log) or "Task failed - log unavailable",
+            "root_cause": f"Otomatik analiz yapılamadı ({type(e).__name__}). Log'u inceleyin.",
+            "confidence": 0.0,
+        }
 
     # Optionally, if the agent can report used docs back, we expect analysis to include "used_docs".
     # If not provided by agent, analysis["used_docs"] will remain absent and Adaptive Card may show nothing.
@@ -182,6 +193,7 @@ async def main_async() -> None:
 
     # Ensure required schema fields exist
     analysis.setdefault("error_summary", "Task failed - analysis unavailable")
+    analysis.setdefault("root_cause", "")
     analysis.setdefault("category", "other")
     analysis.setdefault("knowledge_fix_steps", [])
     analysis.setdefault("generic_fix_steps", [])
@@ -229,7 +241,6 @@ async def main_async() -> None:
                 output_to_stdout(result)
             else:
                 verify_ssl = output_config.get("teams_verify_ssl", False)
-                print("!!!! ", cfg.get('base_url'))
                 output_to_teams(result, webhook_url, verify_ssl, cfg.get('base_url'))
         else:
             LOG.warning("[output] Unknown output method '%s', falling back to stdout", output_method)
