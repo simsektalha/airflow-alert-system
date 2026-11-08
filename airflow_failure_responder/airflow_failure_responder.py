@@ -241,7 +241,7 @@ async def main_async() -> None:
                 output_to_stdout(result)
             else:
                 verify_ssl = output_config.get("teams_verify_ssl", False)
-                output_to_teams(result, webhook_url, verify_ssl, cfg.get('base_url'))
+                output_to_teams(result, webhook_url, verify_ssl, cfg.get('base_url'), (cfg.get("confluence") or {}).get("page_url"))
         else:
             LOG.warning("[output] Unknown output method '%s', falling back to stdout", output_method)
             output_to_stdout(result)

@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 import requests
 from urllib.parse import quote
 
@@ -25,7 +25,7 @@ def steps_to_textblocks(steps: List[str]) -> List[Dict[str, Any]]:
     return blocks
 
 
-def _build_adaptive_card(result: Dict[str, Any], base_url) -> Dict[str, Any]:
+def _build_adaptive_card(result: Dict[str, Any], base_url, confluence_url: Optional[str] = None) -> Dict[str, Any]:
     """
     Build an Adaptive Card payload (as Python dict) for Teams.
     Robust: accepts used_docs as list[str] or list[dict], falls back to evidence if needed,
@@ -188,12 +188,13 @@ def _build_adaptive_card(result: Dict[str, Any], base_url) -> Dict[str, Any]:
         {
             "type": "ActionSet",
             "id": "buttons_row",
-            "actions": [
+            "actions": [a for a in [
                 # Log link if available
                 {"type": "Action.OpenUrl", "title": "Log'a Git", "url": airflow_ui_url or (result.get("log_url") or "")},
-                {"type": "Action.OpenUrl", "title": "📄 Confluence", "url": "https://confluence.example.local/x/PAGE"},
+                # Confluence button only when configured (confluence.page_url)
+                {"type": "Action.OpenUrl", "title": "📄 Confluence", "url": confluence_url} if confluence_url else None,
                 {"type": "Action.ToggleVisibility", "title": "Detaylar", "targetElements": ["details_section"]}
-            ]
+            ] if a]
         },
         details_container,
     ]
@@ -241,12 +242,12 @@ def _build_adaptive_card(result: Dict[str, Any], base_url) -> Dict[str, Any]:
     return card
 
 
-def output_to_teams(result: Dict[str, Any], webhook_url: str, verify_ssl: bool = True, base_url: str = "https://airflow.example.local:8080") -> None:
+def output_to_teams(result: Dict[str, Any], webhook_url: str, verify_ssl: bool = True, base_url: Optional[str] = None, confluence_url: Optional[str] = None) -> None:
     """
     Send an Adaptive Card to Teams with nice layout and toggles.
     """
 
-    card = _build_adaptive_card(result, base_url)
+    card = _build_adaptive_card(result, base_url, confluence_url)
 
     # The Teams incoming webhook expects a top-level JSON with attachments:
     payload = {

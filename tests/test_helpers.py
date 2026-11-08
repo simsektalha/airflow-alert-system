@@ -35,6 +35,13 @@ def test_card_skips_root_cause_when_missing():
     assert "Kök Neden" not in json.dumps(card, ensure_ascii=False)
 
 
+def test_confluence_button_only_when_configured():
+    without = json.dumps(_build_adaptive_card(_result({"error_summary": "boom"}), "https://af"))
+    with_url = json.dumps(_build_adaptive_card(_result({"error_summary": "boom"}), "https://af", "https://wiki/x/1"))
+    assert "Confluence" not in without
+    assert "https://wiki/x/1" in with_url
+
+
 def test_redaction_hides_password_and_conn_string():
     out = redact_text("password=hunter2 postgresql://u:p@db/x")
     assert "hunter2" not in out and "u:p@" not in out
