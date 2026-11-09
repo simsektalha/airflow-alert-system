@@ -83,6 +83,14 @@ def analyzer_run_id(dag_id: str, run_id: str, task_id: str, try_number: int) -> 
     return f"{rid[:MAX_RUN_ID_LEN - 14]}__{digest}"
 
 
+def get_conn_or_none(conn_id):
+    """Connection or None, so an optional subsystem degrades instead of failing the task."""
+    try:
+        return Connection.get(conn_id)
+    except Exception:
+        return None
+
+
 def load_api_access(conn_getter=Connection.get) -> Tuple[str, str, str]:
     """(base_url, login, password) from the API Connection. Shared with the analyzer DAG."""
     conn = conn_getter(API_CONN_ID)

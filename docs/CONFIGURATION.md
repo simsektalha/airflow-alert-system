@@ -94,7 +94,7 @@ Any OpenAI-compatible chat completions endpoint: vLLM, LiteLLM, Ollama (`/v1`), 
 | `knowledge.table` | `airflow_kb_rows` | One row per incident record. |
 | `knowledge.top_k` | `5` | Incident records put in the prompt. |
 | `knowledge.embedder.base_url` | (none) | OpenAI-compatible `/embeddings` endpoint, e.g. an embedding model served by vLLM on a GPU cluster, LiteLLM, or Ollama. Ollama-style `embedder.host` still works. |
-| `knowledge.embedder.id` | `nomic-embed-text` | Embedding model. Changing it re-embeds every incident record on the next sync. |
+| `knowledge.embedder.id` | `nomic-embed-text` | Embedding model. Changing it re-embeds every incident record on the next `kb_ingest` run. Trigger `kb_ingest` right after the change: until it runs, stored vectors are from the old model (dimension error, or meaningless matches if the dimension is the same). |
 | `knowledge.embedder.api_key` | `"none"` | From `failure_responder_llm`. |
 | `knowledge.embedder.timeout` | `30` | Seconds. |
 | `knowledge.embedder.verify` | `tls.verify` | Same as `llm.verify`. |
@@ -123,7 +123,7 @@ The responder reads the **first table** of each page (Confluence Data Center RES
 | `confluence.auth.username` / `password` | (none) | From `failure_responder_confluence`. |
 | `confluence.page_url` | (none) | Shown as the "📄 Confluence" button on the alert card; the button is hidden when unset. |
 
-Sync runs before each analysis. When nothing changed, the cost is one page fetch and one query. If a page parses to zero rows (layout change, partial page), the stored incident records are kept.
+Sync runs in the `kb_ingest` DAG (`@daily`, `retries=2`, one run at a time), not per failure. When nothing changed, the cost is one page fetch and one query per page. If a page parses to zero rows (layout change, partial page), the stored incident records are kept. Trigger `kb_ingest` by hand after deploy or after a big page edit. A failed sync leaves the previous incident records in place; alerts keep working.
 
 ## Output
 
