@@ -240,7 +240,7 @@ async def main_async() -> None:
                 LOG.info("[output] Falling back to stdout")
                 output_to_stdout(result)
             else:
-                verify_ssl = output_config.get("teams_verify_ssl", False)
+                verify_ssl = output_config.get("teams_verify_ssl", True)  # Teams webhooks use a public cert
                 output_to_teams(result, webhook_url, verify_ssl, cfg.get('base_url'), (cfg.get("confluence") or {}).get("page_url"))
         else:
             LOG.warning("[output] Unknown output method '%s', falling back to stdout", output_method)
