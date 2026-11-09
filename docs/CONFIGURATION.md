@@ -34,7 +34,7 @@ The system uses a single Airflow Variable `v_callback_fetch_failed_task` contain
     "method": "stdout",
     "file_path": "/tmp/failed_task_log.json",
     "teams_webhook": "https://api.powerplatform.com/...",
-    "teams_verify_ssl": false
+    "teams_verify_ssl": true
   },
   "pdf_knowledge": {
     "path": "/path/to/Problem_Solutions.pdf",
@@ -122,7 +122,7 @@ The system uses a single Airflow Variable `v_callback_fetch_failed_task` contain
 "output": {
   "method": "teams",
   "teams_webhook": "https://api.powerplatform.com/...",
-  "teams_verify_ssl": false
+  "teams_verify_ssl": true
 }
 ```
 
