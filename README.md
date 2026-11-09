@@ -1,161 +1,136 @@
-# Airflow AI-Powered Failure Analysis System
+# Airflow Failure Responder
 
-An enterprise-grade Airflow failure analysis system that leverages AI-powered teams to automatically diagnose, analyze, and provide actionable insights for failed DAG tasks through intelligent root cause analysis, automated fix recommendations, and multi-channel notifications.
+When an Airflow task fails, this system reads the task log, finds similar past incidents in your Confluence incident table, asks an LLM for the root cause and fix, and posts an **alert card** to Microsoft Teams. If the analysis cannot be produced, it still posts a **fallback alert** with the last error line, so a failure is never silent.
 
-## 🚀 Quick Start
+Built for Airflow 3 (REST API v2, FAB auth) and any OpenAI-compatible LLM gateway (vLLM, LiteLLM, Ollama). Logs are redacted before they leave the worker, and nothing is sent to an external service unless you point the gateway there.
 
-### 1. Deploy
-```bash
-cp -r airflow_failure_responder /path/to/airflow/dags/   # responder package
-cp dags/callbacks/trigger_failure_responder.py /path/to/airflow/dags/callbacks/
-cp dags/example.py /path/to/airflow/dags/
+Terms in **bold** are defined in [GLOSSARY.md](GLOSSARY.md).
+
+## How it works
+
+```mermaid
+flowchart TB
+    fail["Task attempt fails<br/>(Airflow 3 worker)"] --> cb["on_failure_callback<br/>trigger_failure_responder.py"]
+    cb -- "JWT + try number" --> api[("Airflow REST API v2")]
+    cb -- "start responder<br/>argv: ids · stdin: token + config" --> fetch
+
+    subgraph responder["Responder · airflow_failure_responder/"]
+        fetch["1 · Fetch task log"] --> crop["2 · Crop to error window, redact secrets"]
+        crop --> sync["3 · Sync incident records"]
+        sync --> find["4 · Find similar incident records"]
+        find --> llm["5 · One LLM call → JSON-schema analysis"]
+        llm --> map["6 · Keep only matched incidents that exist"]
+        map --> card["7 · Build alert card"]
+    end
+
+    fetch -. "GET /logs/:try" .-> api
+    conf["Confluence incident table"] -. "new / changed rows" .-> sync
+    sync -. "embed + upsert" .-> kb[("Knowledge base<br/>Postgres + pgvector")]
+    find -. "cosine top-k" .-> kb
+    llm -. "OpenAI-compatible API" .-> gw["LLM gateway<br/>vLLM · LiteLLM · Ollama"]
+    card --> teams["Microsoft Teams"]
+    llm -- "log or LLM unavailable" --> fb["Fallback alert"] --> teams
 ```
 
-### 2. Configure
-Set up the `v_callback_fetch_failed_task` Airflow Variable:
+1. **Callback** (runs inside the failed task's worker): gets a JWT from `/auth/token`, reads the try number, and starts the responder as a detached process. Identifiers go in argv; the token and config go over stdin, so they never show in `ps` or the task log.
+2. **Task log**: fetched from `/api/v2/.../logs/{try}`, cropped to the window around the error, then secrets (passwords, tokens, connection strings, emails, keys) are redacted.
+3. **Knowledge base**: rows of the Confluence incident table are stored in Postgres + pgvector. Only new or changed rows are embedded; rows removed from the page are deleted.
+4. **Analysis**: the closest incident records go into the prompt as `K1..Kn`. The LLM returns a structured analysis and the IDs it used. The code maps those IDs back to real records, so a **matched incident** on the card can't be invented.
+5. **Alert card**: posted to a Teams Workflows (Power Automate) webhook.
+
+## What the alert card shows
+
+| Section | Content |
+|---|---|
+| Header | Error summary (one sentence), DAG |
+| 🎯 Kök Neden | **Root cause**, not the symptom |
+| 📄 Kullanılan Dokümanlar | **Matched incidents** (date · service · summary) |
+| 📚 Knowledge Kaynaklı Öneriler | Fix steps taken from matched incidents only |
+| 🔧 Genel Öneriler | General fix steps |
+| 🛡️ Önleme | Prevention |
+| Detaylar (toggle) | DAG, task, run, try, needs rerun, confidence |
+| Buttons | Log in the Airflow UI, Confluence page (if configured) |
+
+Card text and the LLM prompt are in Turkish.
+
+## Quick start
+
+**1. Deploy** to the Airflow DAGs folder:
+
+```bash
+cp -r airflow_failure_responder /path/to/airflow/dags/
+cp dags/callbacks/trigger_failure_responder.py /path/to/airflow/dags/callbacks/
+pip install -r requirements.txt   # in the interpreter set as config.invoke.python
+```
+
+**2. Configure** the Airflow Variable `v_callback_fetch_failed_task` (minimal example; all keys in [docs/CONFIGURATION.md](docs/CONFIGURATION.md)):
+
 ```json
 {
-  "base_url": "https://your-airflow-instance:8080",
-  "auth": { "basic": { "username": "user", "password": "pass" } },
-  "llm": {
-    "driver": "openai_like",
-    "base_url": "https://api.openai.com/v1",
-    "api_key": "your-api-key",
-    "model": "gpt-4o-mini"
+  "base_url": "https://airflow.example.com",
+  "auth": { "basic": { "username": "svc_alerts", "password": "..." } },
+  "llm": { "base_url": "https://llm-gateway.example.com/v1", "api_key": "...", "model": "qwen2.5-72b-instruct" },
+  "knowledge": {
+    "embedder": { "base_url": "https://llm-gateway.example.com/v1", "id": "bge-m3" },
+    "vector_db": { "db_url": "postgresql://kb:...@pg.example.com:5432/kb" }
   },
-  "output": { "method": "stdout" }
+  "confluence": {
+    "base_url": "https://confluence.example.com",
+    "page_ids": ["123456"],
+    "page_url": "https://confluence.example.com/x/AbCd",
+    "auth": { "username": "svc_alerts", "password": "..." }
+  },
+  "output": { "method": "teams", "teams_webhook": "https://...powerplatform.com/..." }
 }
 ```
 
-### 3. Use
+**3. Attach** the callback to your DAGs:
+
 ```python
 from callbacks.trigger_failure_responder import on_failure_trigger_fetcher
 
-default_args = {
-    "on_failure_callback": on_failure_trigger_fetcher,
-}
+default_args = {"on_failure_callback": on_failure_trigger_fetcher}
 ```
 
-## 📊 Features
+Without `knowledge` and `confluence` the analysis runs from the task log alone. Without `llm` every failure gets a fallback alert.
 
-- **🤖 Sequential AI Team**: Specialized agents working in sequence for focused analysis
-- **📄 PDF Knowledge Base**: Integrates custom Problem_Solutions.pdf for proven solutions
-- **🔍 Smart Search**: Agents search knowledge base first for documented solutions
-- **📤 Multi-Channel Output**: stdout, file, or Microsoft Teams notifications
-- **⚡ Event-Driven**: Automatic failure detection via Airflow callbacks
-- **🔧 Configurable**: Flexible configuration via Airflow Variables
-- **🎯 Focused Workflow**: Each agent has specific input/output responsibilities
+## Repository layout
 
-## 📁 Project Structure
-
-```
-airflow-alert-system/
-├── airflow_failure_responder.py          # Main failure responder script
-├── dags/
-│   ├── callbacks/
-│   │   └── trigger_failure_responder.py  # Airflow callback function
-│   └── example.py                        # Example DAG with failure scenarios
-├── docs/                                 # Detailed documentation
-│   ├── CONFIGURATION.md                  # Complete configuration guide
-│   ├── PDF_INTEGRATION.md               # PDF knowledge base setup
-│   └── GPU_CLUSTER.md                   # GPU cluster embedder guide
-└── README.md                            # This file
+```text
+dags/
+├── callbacks/trigger_failure_responder.py  # on_failure_callback: JWT, try number, start responder
+└── example.py                              # DAG that fails with a random realistic error
+airflow_failure_responder/                  # responder, runs as a separate process
+├── airflow_failure_responder.py            # entrypoint: fetch → crop/redact → knowledge → LLM → output
+├── airflow_log_client.py                   # GET the v2 log, flatten structured log JSON to text
+├── log_processing.py                       # crop error window, last error line
+├── redaction.py                            # secret patterns
+├── knowledge.py                            # Confluence parse + sync, embeddings, pgvector search
+├── llm_agent.py                            # prompt, OpenAI-compatible call, matched-incident mapping
+├── models.py                               # analysis JSON schema
+├── output.py                               # alert card, stdout, file
+└── ssl_patch.py                            # opt-in global TLS bypass
+tests/                                      # pytest; pgvector test runs when PG_TEST_DSN is set
+GLOSSARY.md                                 # domain terms
 ```
 
-## 🤖 AI Team Workflow
+## Testing
 
-The system uses a sequential team of specialized AI agents:
+```bash
+pip install -r requirements.txt pytest
+pytest tests
 
-### 1. **LogIngestor**
-- **Input**: Raw Airflow logs
-- **Process**: Extracts and summarizes error information
-- **Output**: Clean error summary (max 10 lines)
-
-### 2. **RootCauseAnalyst**
-- **Input**: Error summary from LogIngestor
-- **Process**: Searches knowledge base for similar patterns, identifies root cause
-- **Output**: Root cause analysis with category and confidence
-
-### 3. **FixPlanner**
-- **Input**: Root cause analysis from RootCauseAnalyst
-- **Process**: Searches knowledge base for documented solutions, creates fix plan
-- **Output**: Specific fix steps and prevention measures
-
-### 4. **Verifier**
-- **Input**: All previous agent outputs
-- **Process**: Validates solutions against knowledge base, consolidates
-- **Output**: Final JSON response in required schema
-
-## 🔧 Configuration
-
-### Basic Configuration
-- **LLM Providers**: OpenAI, Ollama, vLLM, Custom GPU clusters
-- **Output Methods**: stdout, file, Microsoft Teams
-- **PDF Knowledge**: Custom Problem_Solutions.pdf integration
-- **Vector Databases**: Chroma, PgVector, LanceDB (default: LanceDB)
-
-### Advanced Features
-- **Smart Search**: Agents search knowledge base first for documented solutions
-- **Custom Embedders**: GPU cluster embedding models
-- **Async Loading**: Non-blocking PDF processing
-- **Upsert Support**: Incremental knowledge base updates
-
-## 📚 Documentation
-
-- **[Configuration Guide](docs/CONFIGURATION.md)** - Complete configuration options
-- **[AI Team Workflow](docs/AI_TEAM_WORKFLOW.md)** - Sequential agent workflow details
-- **[PDF Integration](docs/PDF_INTEGRATION.md)** - PDF knowledge base setup
-- **[GPU Cluster Setup](docs/GPU_CLUSTER.md)** - Custom embedder configuration
-
-## 🗂️ Default Configuration (LanceDB + Ollama)
-
-The system now defaults to LanceDB (vector database) and Ollama (embedder) for local development:
-
-```json
-{
-  "pdf_knowledge": {
-    "path": "./docs/Problem_Solutions.pdf",
-    "vector_db": {
-      "type": "lancedb",
-      "table_name": "vectors",
-      "uri": "./lancedb"
-    },
-    "embedder": {
-      "type": "ollama",
-      "id": "nomic-embed-text"
-    },
-    "recreate": true,
-    "upsert": true
-  }
-}
+# with a real pgvector:
+podman run -d --rm --name kbtest -e POSTGRES_PASSWORD=t -p 55432:5432 docker.io/pgvector/pgvector:pg16
+PG_TEST_DSN=postgresql://postgres:t@127.0.0.1:55432/postgres pytest tests
 ```
 
-**Key Changes:**
-- **Default Vector DB**: LanceDB (was Chroma)
-- **Default Embedder**: Ollama (was OpenAI)
-- **Optional Host**: Ollama host parameter is optional (defaults to localhost:11434)
-- **Model Parameter**: Changed from `model` to `id` for Ollama embedder
+For an end-to-end check, attach the callback, trigger `example_realistic_failures` and watch the Teams channel.
 
-**Notes:**
-- Set `uri` to a local folder (e.g., `./lancedb`). Delete it to reset.
-- Ollama host is optional - if not provided, defaults to `http://localhost:11434`
-- For offline/dev, this configuration keeps everything local
+## Roadmap
 
-## 🧪 Testing
-
-Use the example DAG to test the system:
-```python
-# The example DAG includes various failure scenarios
-# Trigger it manually to test the failure callback system
-```
-
-## 📞 Support
-
-- Check Airflow logs for callback execution
-- Verify Airflow Variable configuration
-- Test with the provided example DAG
-- Monitor output notifications
-
----
-
-**Production Ready**: This system is designed for production use with robust error handling and comprehensive logging.
+- **Analyzer DAG**: the callback triggers a `failure_analyzer` DAG run instead of a detached process. You get retries and Airflow UI visibility, and secrets come from Connections.
+- **Daily `kb_ingest` DAG**: Confluence sync moves out of the per-failure path.
+- **Dedup**: one alert card per root-cause fingerprint within a cooldown, followed by a "N tasks affected" summary.
+- **Airflow context tools**: the LLM can read the task instance, the DAG source (redacted), the last successful run and other failures in the same run.
+- **Feedback**: an Airflow 3.1 HITL step records whether the analysis was right, and later analyses prefer confirmed incidents.

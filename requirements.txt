@@ -1,0 +1,7 @@
+# Responder runtime (the interpreter in config.invoke.python). Airflow itself is not needed here.
+openai>=1.40
+httpx>=0.27
+psycopg[binary]>=3.1
+requests>=2.31
+pydantic>=2.5
+beautifulsoup4>=4.12

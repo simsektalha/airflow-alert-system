@@ -15,8 +15,8 @@ This script:
   - Decodes config
   - Fetches the log using airflow_log_client.fetch_log_using_token (runs in thread)
   - Processes/log-window/redaction
-  - Optionally ingests Confluence
-  - Runs LLM analysis (with knowledge filtering based on DAG)
+  - Optionally syncs Confluence rows into the pgvector KB (only new/changed rows are embedded)
+  - Retrieves similar KB rows and runs one LLM call (OpenAI-compatible endpoint, no agent framework)
   - Outputs result according to cfg.output
 """
 from __future__ import annotations
@@ -32,8 +32,8 @@ from typing import Any, Dict, Optional
 from logging_cfg import configure_logging, _mask
 from airflow_log_client import fetch_log_using_token, _derive_verify
 from log_processing import crop_log_window, process_logs, last_error_line
-from knowledge import setup_knowledge_base, ingest_confluence_page_to_kb  # keep KB setup/ingest helpers
-from llm_agent import build_agent_from_cfg, ask_llm_for_analysis
+from knowledge import ingest_confluence, retrieve_knowledge
+from llm_agent import build_llm_client, ask_llm_for_analysis
 from output import output_to_stdout, output_to_file, output_to_teams
 from ssl_patch import apply_insecure_ssl_patch
 
@@ -74,12 +74,12 @@ async def main_async() -> None:
     # Safe config summary (no secrets)
     llm_cfg = cfg.get("llm", {})
     LOG.info(
-        "[config] tls.verify=%s timeouts(connect=%s,total=%s) llm.driver=%s model=%s",
+        "[config] tls.verify=%s timeouts(connect=%s,total=%s) llm.base_url=%s model=%s",
         (cfg.get("tls", {}).get("verify", True)),
         (cfg.get("timeouts", {}).get("connect", 10.0)),
         (cfg.get("timeouts", {}).get("total", 30.0)),
-        (llm_cfg.get("driver") or "openai_like"),
-        (llm_cfg.get("model") or "llama"),
+        (llm_cfg.get("base_url") or llm_cfg.get("host")),
+        (llm_cfg.get("model") or "llama3.1"),
     )
 
     tls = cfg.get("tls") or {}
@@ -123,33 +123,22 @@ async def main_async() -> None:
     processed_log = process_logs(focused_log, max_chars=50_000)
     LOG.info("[parse] processed_log_len=%d", len(processed_log))
 
-    # 4) Knowledge base (optional) + service-aware retrieval via Agent filters
-    kb = setup_knowledge_base(cfg)
-    if kb:
-        confluence_cfg = cfg.get("confluence")
-        if confluence_cfg:
-            try:
-                LOG.info("[kb] Starting Confluence ingestion")
-                await ingest_confluence_page_to_kb(
-                    kb=kb,
-                    base_url=confluence_cfg.get("base_url"),
-                    page_id=confluence_cfg.get("page_id"),
-                    auth=(
-                        confluence_cfg.get("auth", {}).get("username"),
-                        confluence_cfg.get("auth", {}).get("password"),
-                    ),
-                    verify=cfg.get("tls", {}).get("verify", True),
-                )
-                LOG.info("[kb] Confluence ingestion finished")
-            except Exception as e:
-                LOG.exception("[kb] Confluence ingestion failed: %s", e)
-        else:
-            LOG.info("[kb] No confluence config found; skipping ingestion")
-    else:
-        LOG.warning("[kb] Knowledge not initialized; skipping ingestion")
+    # 4) Knowledge base: sync Confluence (cheap when unchanged), then retrieve similar rows
+    # shortcut: sync runs per failure until the daily kb_ingest DAG exists (PR2)
+    if cfg.get("confluence"):
+        try:
+            ingest_confluence(cfg, verify)
+        except Exception:
+            LOG.exception("[kb] Confluence sync failed; using existing KB rows")
 
-    # Build agent and pass service filter for knowledge retrieval (Agent is expected to accept knowledge_filters)
-    # We derive service string exactly as required: "Airflow - <dag_id>"
+    try:
+        # Embed the error-focused tail, not the whole 50k window
+        query = (last_error_line(processed_log) + "\n" + processed_log[-3000:]).strip()
+        docs = retrieve_knowledge(cfg, query, verify)
+    except Exception:
+        LOG.exception("[kb] Knowledge retrieval failed; analyzing without knowledge")
+        docs = []
+
     identifiers: Dict[str, Optional[Any]] = {
         "dag_id": getattr(args, "dag_id", None),
         "dag_run_id": getattr(args, "dag_run_id", None),
@@ -157,27 +146,12 @@ async def main_async() -> None:
         "try_number": getattr(args, "try_number", None),
     }
 
-    dag_id_val = identifiers.get("dag_id")
-    knowledge_filters = None
-    if dag_id_val:
-        service_str = f"Airflow - {dag_id_val}"
-        #knowledge_filters = {"service": service_str}
-        LOG.info("[kb] Will build agent with knowledge_filters=%s", knowledge_filters)
-    else:
-        LOG.info("[kb] No dag_id provided; building agent without knowledge_filters")
-
-    agent = build_agent_from_cfg(cfg, kb, knowledge_filters=knowledge_filters)
-    LOG.info("[llm] Single Agent available=%s", bool(agent))
-
-    # 5) Ask LLM for analysis, pass the service-matched docs implicitly via agent filters
+    # 5) Ask LLM for analysis
     try:
-        if agent is None:
-            raise RuntimeError("LLM agent not configured")
-        analysis = await ask_llm_for_analysis(
-            agent=agent,
-            full_log=processed_log,
-            identifiers=identifiers,
-        )
+        client = build_llm_client(cfg, verify)
+        if client is None:
+            raise RuntimeError("LLM not configured")
+        analysis = ask_llm_for_analysis(client, cfg, processed_log, identifiers, docs)
     except Exception as e:
         # Never stay silent: send the raw error line instead of an LLM analysis
         LOG.exception("[llm] LLM analysis failed; sending fallback card")
@@ -186,10 +160,6 @@ async def main_async() -> None:
             "root_cause": f"Otomatik analiz yapılamadı ({type(e).__name__}). Log'u inceleyin.",
             "confidence": 0.0,
         }
-
-    # Optionally, if the agent can report used docs back, we expect analysis to include "used_docs".
-    # If not provided by agent, analysis["used_docs"] will remain absent and Adaptive Card may show nothing.
-    # You may later add a small metadata-only post-query for UI if needed.
 
     # Ensure required schema fields exist
     analysis.setdefault("error_summary", "Task failed - analysis unavailable")
@@ -200,7 +170,8 @@ async def main_async() -> None:
     analysis.setdefault("prevention", [])
     analysis.setdefault("needs_rerun", True)
     analysis.setdefault("confidence", 0.5)
-    analysis.setdefault("used_docs", analysis.get("used_docs", []))
+    analysis.setdefault("used_docs", [])
+    analysis.setdefault("used_knowledge", False)
 
     # 6) Compose result - keep identifiers even if None
     result = {
