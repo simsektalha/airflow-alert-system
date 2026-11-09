@@ -19,6 +19,7 @@ from airflow_log_client import fetch_log_using_token, _derive_verify
 from log_processing import crop_log_window, process_logs, last_error_line
 from knowledge import retrieve_knowledge
 from llm_agent import build_llm_client, ask_llm_for_analysis
+from airflow_tools import make_tool_runner
 from output import output_to_stdout, output_to_file, output_to_teams, output_summary
 from dedup import claim_failure, flush_summaries
 from ssl_patch import apply_insecure_ssl_patch
@@ -140,7 +141,10 @@ async def run_analysis(cfg: Dict[str, Any], token: str, log_url: str, identifier
         client = build_llm_client(cfg, verify)
         if client is None:
             raise RuntimeError("LLM not configured")
-        analysis = ask_llm_for_analysis(client, cfg, processed_log, identifiers, docs)
+        run_tool = None
+        if cfg.get("base_url"):
+            run_tool = make_tool_runner(cfg["base_url"], token, verify, (connect_timeout, total_timeout), identifiers)
+        analysis = ask_llm_for_analysis(client, cfg, processed_log, identifiers, docs, run_tool)
     except Exception as e:
         # Never stay silent: send the raw error line instead of an LLM analysis
         LOG.exception("[llm] LLM analysis failed; sending fallback card")

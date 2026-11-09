@@ -7,11 +7,12 @@ back to the real rows, so the card never shows a source the model made up.
 """
 import json
 import logging
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import httpx
 from openai import OpenAI
 
+from airflow_tools import TOOL_SPECS
 from models import AirflowFailureAnalysis
 
 LOG = logging.getLogger("airflow-failure-responder")
@@ -61,6 +62,12 @@ Hızlı, doğru ve uygulanabilir incident analizi üretmek.
 '''
 
 DOC_CHARS = 1500  # per knowledge row in the prompt
+
+TOOL_PHASE_PROMPT = (
+    "Analizden önce, gerekiyorsa araçlarla Airflow bağlamını oku (task instance, DAG kodu, "
+    "son başarılı run, aynı run'daki diğer hatalar). Log yeterliyse araç çağırma. "
+    "Bu adımda JSON yazma; sadece araç çağır ya da 'TAMAM' yaz."
+)
 
 
 def build_llm_client(cfg: Dict[str, Any], verify: Union[bool, str]) -> Optional[OpenAI]:
@@ -114,9 +121,39 @@ def _response_format(cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None  # "none": rely on the prompt + _parse_analysis
 
 
+def _gather_context(client: OpenAI, cfg: Dict[str, Any], messages: List[Dict[str, Any]],
+                    run_tool: Callable[[str], str], context: List[Tuple[str, str]]) -> None:
+    """Tool-calling rounds; appends (tool, output) to `context` so a mid-loop error keeps what was read."""
+    llm = cfg.get("llm") or {}
+    msgs = list(messages) + [{"role": "user", "content": TOOL_PHASE_PROMPT}]
+    for _ in range(int(llm.get("max_tool_rounds", 4))):
+        resp = client.chat.completions.create(
+            model=llm.get("model") or "llama3.1",
+            messages=msgs,
+            tools=TOOL_SPECS,
+            tool_choice="auto",
+            temperature=float(llm.get("temperature") or 0.1),
+            max_tokens=int(llm.get("max_tokens") or 4000),
+        )
+        msg = resp.choices[0].message
+        calls = msg.tool_calls or []
+        if not calls:
+            return
+        msgs.append({"role": "assistant", "content": msg.content or "", "tool_calls": [
+            {"id": c.id, "type": "function", "function": {"name": c.function.name, "arguments": c.function.arguments or "{}"}}
+            for c in calls]})
+        for c in calls:
+            out = run_tool(c.function.name)
+            context.append((c.function.name, out))
+            msgs.append({"role": "tool", "tool_call_id": c.id, "content": out})
+    LOG.info("[llm] max_tool_rounds reached; analyzing with the context gathered so far")
+
+
 def ask_llm_for_analysis(client: OpenAI, cfg: Dict[str, Any], full_log: str,
-                         identifiers: Dict[str, Any], docs: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Single LLM call -> analysis dict (incl. used_docs/used_knowledge mapped from real rows)."""
+                         identifiers: Dict[str, Any], docs: List[Dict[str, Any]],
+                         run_tool: Optional[Callable[[str], str]] = None) -> Dict[str, Any]:
+    """Optional tool rounds for Airflow context, then one structured call -> analysis dict
+    (incl. used_docs/used_knowledge mapped from real rows)."""
     llm = cfg.get("llm") or {}
 
     prompt = f"""
@@ -224,10 +261,24 @@ LOG END
     if rf:
         kwargs["response_format"] = rf
 
+    messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}]
+    if run_tool is not None and llm.get("tools", True):
+        context: List[Tuple[str, str]] = []
+        try:
+            _gather_context(client, cfg, messages, run_tool, context)
+        except Exception:
+            # Gateway without tool support (or a bad round): fall back to the plain single-call analysis
+            LOG.exception("[llm] tool calling failed; analyzing without more Airflow context")
+        LOG.info("[llm] tools used: %s", [name for name, _ in context])
+        if context:
+            # Plain text, not tool messages: the final call has no `tools`, and some gateways reject that mix
+            extra = "\n\n".join(f"### {name}\n{out}" for name, out in context)
+            messages.append({"role": "user", "content": f"EK BAĞLAM (Airflow API, redacted):\n\n{extra}"})
+
     LOG.info("[llm] prompt size: full_log=%d docs=%d", len(full_log), len(docs))
     resp = client.chat.completions.create(
         model=llm.get("model") or "llama3.1",
-        messages=[{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}],
+        messages=messages,
         temperature=float(llm.get("temperature") or 0.1),
         # 800 truncated structured JSON in practice; 4000 leaves room for the full schema
         max_tokens=int(llm.get("max_tokens") or 4000),

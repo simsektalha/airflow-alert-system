@@ -28,6 +28,7 @@ flowchart TB
     conf["Confluence incident table"] -. "new / changed rows" .-> ingest
     ingest -. "embed + upsert" .-> kb[("Knowledge base<br/>Postgres + pgvector")]
     find -. "cosine top-k" .-> kb
+    llm -. "tools: TI · DAG source · runs" .-> api
     llm -. "OpenAI-compatible API" .-> gw["LLM gateway<br/>vLLM · LiteLLM · Ollama"]
     card --> teams["Microsoft Teams"]
     llm -- "log or LLM unavailable" --> fb["Fallback alert"] --> teams
@@ -37,7 +38,7 @@ flowchart TB
 2. **Analyzer task**: reads the Variable for settings and Airflow Connections for secrets, gets its own JWT, and runs the steps below. It has Airflow retries and shows up in the Airflow UI.
 3. **Task log**: fetched from `/api/v2/.../logs/{try}`, cropped to the window around the error, then secrets (passwords, tokens, connection strings, emails, keys) are redacted.
 4. **Knowledge base**: the daily `kb_ingest` DAG stores the rows of the Confluence incident table in Postgres + pgvector. Only new or changed rows are embedded; rows removed from the page are deleted. The analyzer only reads it, so a Confluence outage never delays an alert.
-5. **Analysis**: the closest incident records go into the prompt as `K1..Kn`. The LLM returns a structured analysis and the IDs it used. The code maps those IDs back to real records, so a **matched incident** on the card can't be invented.
+5. **Analysis**: the model may first read Airflow context through read-only tools (task instance, redacted DAG source, last successful run, other failures in the run). The closest incident records go into the prompt as `K1..Kn`. The LLM returns a structured analysis and the IDs it used. The code maps those IDs back to real records, so a **matched incident** on the card can't be invented.
 6. **Alert card**: posted to a Teams Workflows (Power Automate) webhook.
 7. **Dedup**: failures with the same **fingerprint** (exception type + normalized message, across all DAGs) inside a 30-minute cooldown get no LLM call and no card. They are counted, and one **dedup summary** card follows when the cooldown ends.
 
@@ -118,6 +119,7 @@ airflow_failure_responder/                  # analysis code, imported by the ana
 ├── log_processing.py                       # crop error window, last error line
 ├── redaction.py                            # secret patterns
 ├── knowledge.py                            # Confluence parse + sync, embeddings, pgvector search
+├── airflow_tools.py                        # read-only Airflow context tools for the LLM
 ├── llm_agent.py                            # prompt, OpenAI-compatible call, matched-incident mapping
 ├── models.py                               # analysis JSON schema
 ├── output.py                               # alert card, dedup summary card, stdout, file
@@ -142,5 +144,4 @@ For an end-to-end check, attach the callback, trigger `example_realistic_failure
 
 ## Roadmap
 
-- **Airflow context tools**: the LLM can read the task instance, the DAG source (redacted), the last successful run and other failures in the same run.
 - **Feedback**: an Airflow 3.1 HITL step records whether the analysis was right, and later analyses prefer confirmed incidents.
