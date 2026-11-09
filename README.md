@@ -7,6 +7,7 @@ An enterprise-grade Airflow failure analysis system that leverages AI-powered te
 ### 1. Deploy
 ```bash
 cp -r airflow_failure_responder /path/to/airflow/dags/   # responder package
+pip install -r requirements.txt                          # in the interpreter set as config.invoke.python
 cp dags/callbacks/trigger_failure_responder.py /path/to/airflow/dags/callbacks/
 cp dags/example.py /path/to/airflow/dags/
 ```

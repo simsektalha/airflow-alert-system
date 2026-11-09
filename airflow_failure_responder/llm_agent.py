@@ -75,7 +75,8 @@ def build_llm_client(cfg: Dict[str, Any], verify: Union[bool, str]) -> Optional[
     return OpenAI(
         base_url=base_url,
         api_key=llm.get("api_key") or "none",
-        http_client=httpx.Client(verify=verify, timeout=float(llm.get("timeout", 120))),
+        # llm.verify overrides tls.verify (the Airflow CA may not sign the gateway)
+        http_client=httpx.Client(verify=llm.get("verify", verify), timeout=float(llm.get("timeout", 120))),
     )
 
 

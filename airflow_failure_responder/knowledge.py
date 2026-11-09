@@ -47,6 +47,10 @@ def _db_url(cfg: Dict[str, Any]) -> Optional[str]:
     return ((cfg.get("knowledge") or {}).get("vector_db") or {}).get("db_url")
 
 
+def _embed_model(cfg: Dict[str, Any]) -> str:
+    return ((cfg.get("knowledge") or {}).get("embedder") or {}).get("id", "nomic-embed-text")
+
+
 def make_embedder(cfg: Dict[str, Any], verify: Union[bool, str]) -> Embedder:
     """OpenAI-compatible embeddings client (vLLM, LiteLLM, Ollama /v1, OpenAI)."""
     e = (cfg.get("knowledge") or {}).get("embedder") or {}
@@ -54,9 +58,10 @@ def make_embedder(cfg: Dict[str, Any], verify: Union[bool, str]) -> Embedder:
     client = OpenAI(
         base_url=base_url,
         api_key=e.get("api_key") or "none",
-        http_client=httpx.Client(verify=verify, timeout=float(e.get("timeout", 30))),
+        # embedder.verify overrides tls.verify (the Airflow CA may not sign the gateway)
+        http_client=httpx.Client(verify=e.get("verify", verify), timeout=float(e.get("timeout", 30))),
     )
-    model = e.get("id", "nomic-embed-text")
+    model = _embed_model(cfg)
 
     def embed(texts: List[str]) -> List[List[float]]:
         out: List[List[float]] = []
@@ -160,8 +165,12 @@ def _get_row_val(row: Dict[str, str], *keys: str) -> str:
     return ""
 
 
-def parse_confluence_table(storage_html: str, page_id: str, title: str) -> List[Dict[str, Any]]:
-    """First table of a Confluence storage-format page -> KB rows {row_key, content, meta}."""
+def parse_confluence_table(storage_html: str, page_id: str, title: str, key_salt: str = "") -> List[Dict[str, Any]]:
+    """First table of a Confluence storage-format page -> KB rows {row_key, content, meta}.
+
+    key_salt (the embedding model id) is part of the key, so switching models
+    re-embeds every row instead of mixing vector sizes in one table.
+    """
     soup = BeautifulSoup(storage_html or "", "html.parser")
     table = soup.find("table")
     if not table:
@@ -217,7 +226,7 @@ def parse_confluence_table(storage_html: str, page_id: str, title: str) -> List[
         ).strip()
 
         # Content-derived key: row reordering does not re-embed; edits replace the row
-        row_key = f"{page_id}:{_sha12(content)}"
+        row_key = f"{page_id}:{_sha12(key_salt + content)}"
         if row_key in seen:
             continue
         seen.add(row_key)
@@ -266,7 +275,7 @@ def ingest_confluence(cfg: Dict[str, Any], verify: Union[bool, str]) -> List[Dic
     with psycopg.connect(_pg_dsn(db_url)) as conn:
         for page_id in page_ids:
             title, storage = fetch_confluence_page(c.get("base_url"), str(page_id), auth, verify)
-            rows = parse_confluence_table(storage, str(page_id), title)
+            rows = parse_confluence_table(storage, str(page_id), title, key_salt=_embed_model(cfg))
             if not rows:
                 # An empty parse (layout change, partial page) must not wipe the stored rows
                 LOG.warning("[ingest] page_id=%s parsed 0 rows; keeping existing KB rows", page_id)

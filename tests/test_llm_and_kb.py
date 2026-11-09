@@ -76,6 +76,12 @@ def test_parse_confluence_table_dedups_and_keys_by_content():
     assert {r["row_key"] for r in parse_confluence_table(reordered, "123", "Olaylar")} == {r["row_key"] for r in rows}
 
 
+def test_embedding_model_change_changes_keys():
+    a = {r["row_key"] for r in parse_confluence_table(TABLE, "123", "Olaylar", key_salt="model-a")}
+    b = {r["row_key"] for r in parse_confluence_table(TABLE, "123", "Olaylar", key_salt="model-b")}
+    assert a and not (a & b)
+
+
 # ---------- pgvector integration (runs only when PG_TEST_DSN is set) ----------
 PG = os.environ.get("PG_TEST_DSN")
 
@@ -103,6 +109,13 @@ def test_upsert_and_search_against_pgvector():
         # Row removed from the page is deleted
         assert upsert_page_rows(conn, "kb_test", "123", rows[:1], fake_embed)["deleted"] == 1
 
+        upsert_page_rows(conn, "kb_test", "123", rows, fake_embed)
+        # Model switch (new keys, 3-dim vectors): old rows are all replaced, no mixed sizes left
+        new_rows = parse_confluence_table(TABLE, "123", "Olaylar", key_salt="model-b")
+        res = upsert_page_rows(conn, "kb_test", "123", new_rows, lambda t: [[1.0, 0.0, 0.0] for _ in t])
+        assert res["inserted"] == 2 and res["deleted"] == 2
+        conn.execute("DELETE FROM kb_test")
+        conn.commit()
         upsert_page_rows(conn, "kb_test", "123", rows, fake_embed)
         hits = search(conn, "kb_test", [0.0, 1.0], 1)
         assert hits[0]["meta"]["service"] == "Metastore" and hits[0]["distance"] < 0.01
