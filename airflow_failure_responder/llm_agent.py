@@ -151,7 +151,8 @@ def _gather_context(client: OpenAI, cfg: Dict[str, Any], messages: List[Dict[str
 
 def ask_llm_for_analysis(client: OpenAI, cfg: Dict[str, Any], full_log: str,
                          identifiers: Dict[str, Any], docs: List[Dict[str, Any]],
-                         run_tool: Optional[Callable[[str], str]] = None) -> Dict[str, Any]:
+                         run_tool: Optional[Callable[[str], str]] = None,
+                         past_analysis: str = "") -> Dict[str, Any]:
     """Optional tool rounds for Airflow context, then one structured call -> analysis dict
     (incl. used_docs/used_knowledge mapped from real rows)."""
     llm = cfg.get("llm") or {}
@@ -262,6 +263,9 @@ LOG END
         kwargs["response_format"] = rf
 
     messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}]
+    if past_analysis:
+        # Team feedback on the same fingerprint (feedback.past_analysis_context)
+        messages.append({"role": "user", "content": past_analysis})
     if run_tool is not None and llm.get("tools", True):
         context: List[Tuple[str, str]] = []
         try:

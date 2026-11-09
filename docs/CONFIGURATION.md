@@ -164,14 +164,24 @@ One alert card per **fingerprint** within a cooldown. The fingerprint is global 
 
 ## failure_analyzer DAG
 
-The callback only triggers a run; the analysis runs as the `analyze` task of `failure_analyzer`, so it is visible in the Airflow UI.
+The callback only triggers a run; the analysis runs as the `analyze` task of `failure_analyzer`, so it is visible in the Airflow UI. Tasks: `analyze` → `feedback` (HITL) → `record_feedback`.
 
 - One run per failed try. Its run id is `fail__{dag_id}__{run_id}__{task_id}__{try}` (hashed tail above 250 characters). A repeated callback gets HTTP 409 and is skipped.
 - `conf`: `{"dag_id", "run_id", "task_id", "try_number"}`. To re-run an analysis, clear the task or trigger the DAG with this conf.
 - `retries=1`: in practice only an output (Teams) failure fails the task; fetch and LLM errors already end in a fallback alert.
-- `max_active_runs=4` keeps a mass failure from flooding the LLM gateway; extra runs wait queued.
+- `analyze` has `max_active_tis_per_dag=4`, so a mass failure cannot flood the LLM gateway; extra runs wait queued. The DAG allows 200 active runs because runs stay open while they wait for feedback.
 - No `on_failure_callback` on this DAG, so a failing analyzer never triggers another analyzer.
 - `requirements.txt` must be installed in the worker image.
+
+## Feedback
+
+After an LLM analysis, the run waits up to 24 hours on the `feedback` task (Airflow 3.1 human-in-the-loop). The alert card's "📝 Geri bildirim ver" button opens that task; anyone who can open it in the Airflow UI can answer on its Required Actions view:
+
+- **Analiz doğru mu?** `Doğru`, `Kısmen` or `Yanlış`, plus an optional note (the real root cause, for example).
+- No answer in 24 hours: stored as `unanswered`. The task does not fail.
+- Fallback alerts, dedup-suppressed failures and setups without `failure_responder_kb_db` skip the feedback steps.
+
+Answers are stored in the `analysis_feedback` table of the knowledge base database, with the analysis and its **fingerprint**. The next analysis with the same fingerprint gets the latest answered one in its prompt: a `Doğru` / `Kısmen` one as a confirmed explanation to build on, a `Yanlış` one (with the team's note) as an explanation not to repeat. `unanswered` ones are not used.
 
 ## Troubleshooting
 

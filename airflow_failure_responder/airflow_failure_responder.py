@@ -13,6 +13,7 @@ import asyncio
 import logging
 import time
 from typing import Any, Callable, Dict, Optional
+from urllib.parse import quote
 
 from logging_cfg import configure_logging, _mask
 from airflow_log_client import fetch_log_using_token, _derive_verify
@@ -21,7 +22,8 @@ from knowledge import retrieve_knowledge
 from llm_agent import build_llm_client, ask_llm_for_analysis
 from airflow_tools import make_tool_runner
 from output import output_to_stdout, output_to_file, output_to_teams, output_summary
-from dedup import claim_failure, flush_summaries
+from dedup import claim_failure, fingerprint, flush_summaries
+from feedback import enabled as feedback_enabled, past_analysis_context, record_pending
 from ssl_patch import apply_insecure_ssl_patch
 
 configure_logging()
@@ -55,7 +57,9 @@ def apply_connections(cfg: Dict[str, Any], get_conn: Callable[[str], Any]) -> Di
     return cfg
 
 
-async def run_analysis(cfg: Dict[str, Any], token: str, log_url: str, identifiers: Dict[str, Optional[Any]]) -> None:
+async def run_analysis(cfg: Dict[str, Any], token: str, log_url: str, identifiers: Dict[str, Optional[Any]],
+                       analyzer_run_id: Optional[str] = None) -> Dict[str, Any]:
+    """Returns {"feedback": bool, ...}; feedback=True only for a stored LLM analysis the team can rate."""
     LOG.info("[start] log_url=%s", log_url)
 
     # shortcut: global TLS bypass kept as opt-in for hosts without the internal CA; prefer tls.verify=<ca path>
@@ -110,6 +114,8 @@ async def run_analysis(cfg: Dict[str, Any], token: str, log_url: str, identifier
     processed_log = process_logs(focused_log, max_chars=50_000)
     LOG.info("[parse] processed_log_len=%d", len(processed_log))
 
+    fp = fingerprint(last_error_line(processed_log))
+
     # 3b) Dedup: send due "N tasks affected" summaries, then suppress this failure if its fingerprint is in cooldown
     try:
         flush_summaries(cfg, lambda summary: output_summary(cfg, summary))
@@ -119,10 +125,10 @@ async def run_analysis(cfg: Dict[str, Any], token: str, log_url: str, identifier
             "run_id": identifiers.get("dag_run_id"),
             "try_number": identifiers.get("try_number"),
         }
-        suppressed, fp = claim_failure(cfg, last_error_line(processed_log), entry)
+        suppressed, _ = claim_failure(cfg, last_error_line(processed_log), entry)
         if suppressed:
             LOG.info("[dedup] suppressed: fp=%s already alerted within cooldown", fp[:12])
-            return
+            return {"feedback": False}
     except Exception:
         # Dedup is an optimization; a broken dedup store must never cost an alert
         LOG.exception("[dedup] failed; analyzing without dedup")
@@ -136,7 +142,14 @@ async def run_analysis(cfg: Dict[str, Any], token: str, log_url: str, identifier
         LOG.exception("[kb] Knowledge retrieval failed; analyzing without knowledge")
         docs = []
 
+    try:
+        past = past_analysis_context(cfg, fp)
+    except Exception:
+        LOG.exception("[feedback] reading past feedback failed; analyzing without it")
+        past = ""
+
     # 5) Ask LLM for analysis
+    analyzed = False
     try:
         client = build_llm_client(cfg, verify)
         if client is None:
@@ -144,7 +157,8 @@ async def run_analysis(cfg: Dict[str, Any], token: str, log_url: str, identifier
         run_tool = None
         if cfg.get("base_url"):
             run_tool = make_tool_runner(cfg["base_url"], token, verify, (connect_timeout, total_timeout), identifiers)
-        analysis = ask_llm_for_analysis(client, cfg, processed_log, identifiers, docs, run_tool)
+        analysis = ask_llm_for_analysis(client, cfg, processed_log, identifiers, docs, run_tool, past)
+        analyzed = True
     except Exception as e:
         # Never stay silent: send the raw error line instead of an LLM analysis
         LOG.exception("[llm] LLM analysis failed; sending fallback card")
@@ -180,6 +194,18 @@ async def run_analysis(cfg: Dict[str, Any], token: str, log_url: str, identifier
         "analysis": analysis,
     }
 
+    # 6b) Feedback: only an LLM analysis can be rated; the HITL task skips otherwise
+    feedback = False
+    if analyzed and analyzer_run_id and cfg.get("base_url") and feedback_enabled(cfg):
+        try:
+            record_pending(cfg, analyzer_run_id, fp, analysis)
+            result["feedback_url"] = (
+                f"{cfg['base_url'].rstrip('/')}/dags/failure_analyzer/runs/{quote(analyzer_run_id, safe='')}/tasks/feedback"
+            )
+            feedback = True
+        except Exception:
+            LOG.exception("[feedback] storing the analysis failed; no feedback step for this run")
+
     LOG.info("[result] response=%s", result)
 
     # 7) Output
@@ -213,3 +239,5 @@ async def run_analysis(cfg: Dict[str, Any], token: str, log_url: str, identifier
     except Exception as e:
         LOG.exception("Failed to output analysis result")
         raise RuntimeError(f"Failed to output analysis result: {e}") from e
+
+    return {"feedback": feedback, "error_summary": analysis.get("error_summary"), "root_cause": analysis.get("root_cause")}

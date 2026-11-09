@@ -50,6 +50,10 @@ _Avoid_: Hash, error key, signature
 The alert card sent after a cooldown, saying how many more failures had the same fingerprint and which tasks they were.
 _Avoid_: Digest, rollup, N-tasks card
 
+**Feedback**:
+A person's verdict on an analysis (`Doğru`, `Kısmen`, `Yanlış`, or `unanswered` after 24 hours), with an optional note. It is reused for later failures with the same fingerprint.
+_Avoid_: Rating, review, approval
+
 **Fallback alert**:
 An alert card sent without an analysis, carrying only the last error line, so a failure is never silent.
 _Avoid_: Error card, empty alert

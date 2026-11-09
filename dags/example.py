@@ -18,7 +18,7 @@ default_args = {
 with DAG(
     dag_id="example_realistic_failures",
     start_date=datetime(2025, 9, 8),
-    schedule_interval=None,
+    schedule=None,
     catchup=False,
     default_args=default_args,
     description="Intentionally fail with one realistic error type chosen randomly each run",

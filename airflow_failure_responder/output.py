@@ -193,6 +193,8 @@ def _build_adaptive_card(result: Dict[str, Any], base_url, confluence_url: Optio
                 {"type": "Action.OpenUrl", "title": "Log'a Git", "url": airflow_ui_url or (result.get("log_url") or "")},
                 # Confluence button only when configured (confluence.page_url)
                 {"type": "Action.OpenUrl", "title": "📄 Confluence", "url": confluence_url} if confluence_url else None,
+                # Only LLM analyses stored for feedback carry this link (Airflow HITL task of the analyzer run)
+                {"type": "Action.OpenUrl", "title": "📝 Geri bildirim ver", "url": result["feedback_url"]} if result.get("feedback_url") else None,
                 {"type": "Action.ToggleVisibility", "title": "Detaylar", "targetElements": ["details_section"]}
             ] if a]
         },

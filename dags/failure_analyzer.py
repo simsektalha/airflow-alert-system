@@ -4,14 +4,18 @@ failure_analyzer: one run per failed task try, triggered by callbacks.trigger_fa
 conf = {dag_id, run_id, task_id, try_number}. Non-secret config comes from the Variable
 'v_callback_fetch_failed_task'; secrets come from the failure_responder_* Connections.
 No on_failure_callback here: a failing analyzer must not trigger another analyzer run.
+
+analyze -> feedback (HITL, 24h) -> record_feedback. analyze short-circuits the feedback steps for
+fallback alerts, dedup-suppressed failures and setups without a knowledge base database.
 """
 import json
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
-from airflow.sdk import DAG, Variable, get_current_context, task
+from airflow.providers.standard.operators.hitl import HITLOperator
+from airflow.sdk import DAG, Param, Variable, get_current_context, task
 
 # Responder modules use flat imports; they are deployed as dags/airflow_failure_responder/
 RESPONDER_DIR = str(Path(__file__).resolve().parent / "airflow_failure_responder")
@@ -22,12 +26,13 @@ with DAG(
     start_date=datetime(2026, 1, 1),
     schedule=None,
     catchup=False,
-    max_active_runs=4,  # protects the LLM gateway during mass failures
+    # Runs stay open up to 24h waiting for feedback; the LLM limit is on the analyze task instead
+    max_active_runs=200,
     default_args={"retries": 1},
     tags=["failure-responder"],
 ):
 
-    @task
+    @task.short_circuit(max_active_tis_per_dag=4)  # protects the LLM gateway during mass failures
     def analyze():
         import asyncio
 
@@ -65,6 +70,39 @@ with DAG(
             "task_id": ids["task_id"],
             "try_number": int(ids["try_number"]),
         }
-        asyncio.run(run_analysis(cfg, token, log_url, identifiers))
+        run_id = get_current_context()["dag_run"].run_id
+        outcome = asyncio.run(run_analysis(cfg, token, log_url, identifiers, analyzer_run_id=run_id))
+        # Falsy return skips the feedback steps; the dict is the XCom the HITL body reads
+        return outcome if outcome.get("feedback") else False
 
-    analyze()
+    feedback = HITLOperator(
+        task_id="feedback",
+        subject="Analiz doğru mu?",
+        body=(
+            "**Hata:** {{ ti.xcom_pull(task_ids='analyze')['error_summary'] }}\n\n"
+            "**Kök neden:** {{ ti.xcom_pull(task_ids='analyze')['root_cause'] }}"
+        ),
+        options=["Doğru", "Kısmen", "Yanlış"],
+        # Applied on timeout so the task does not fail; record_feedback stores it as 'unanswered'
+        defaults=["Kısmen"],
+        params={"note": Param("", type=["null", "string"], description="Doğru kök neden / not (isteğe bağlı)")},
+        # response wait; newer providers move this to response_timeout themselves
+        execution_timeout=timedelta(hours=24),
+        retries=0,
+    )
+
+    @task(retries=2)
+    def record_feedback(answer):
+        if RESPONDER_DIR not in sys.path:
+            sys.path.insert(0, RESPONDER_DIR)
+        from airflow_failure_responder import apply_connections
+        from callbacks.trigger_failure_responder import get_conn_or_none
+        from feedback import parse_hitl_answer, record_verdict
+
+        cfg = apply_connections(json.loads(Variable.get("v_callback_fetch_failed_task")), get_conn_or_none)
+        parsed = parse_hitl_answer(answer)
+        record_verdict(cfg, get_current_context()["dag_run"].run_id, **parsed)
+        return parsed["verdict"]
+
+    record_feedback(feedback.output)
+    analyze() >> feedback
