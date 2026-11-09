@@ -52,10 +52,13 @@ def test_claim_suppresses_within_cooldown_and_flush_sends_once():
     conn.execute(f"DELETE FROM {dedup.TABLE}")
     fp = fingerprint("KeyError: 'x'")
     e = {"dag_id": "d", "task_id": "t", "run_id": "r", "try_number": 1}
+    e2, e3 = dict(e, task_id="t2"), dict(e, task_id="t3")
 
     assert dedup.claim(conn, fp, "KeyError: 'x'", e, 30) is False  # first: full analysis
-    assert dedup.claim(conn, fp, "KeyError: 'x'", e, 30) is True
-    assert dedup.claim(conn, fp, "KeyError: 'x'", e, 30) is True
+    # Retry of the same failure (its card failed to send) is analyzed again, not counted
+    assert dedup.claim(conn, fp, "KeyError: 'x'", e, 30) is False
+    assert dedup.claim(conn, fp, "KeyError: 'x'", e2, 30) is True
+    assert dedup.claim(conn, fp, "KeyError: 'x'", e3, 30) is True
 
     sent = []
     assert dedup.flush(conn, 30, sent.append) == 0  # window still open
@@ -72,7 +75,7 @@ def test_claim_suppresses_within_cooldown_and_flush_sends_once():
     assert dedup.flush(conn, 30, sent.append) == 0  # sent only once
 
     # After the window a new failure opens a new window and is analyzed again
-    assert dedup.claim(conn, fp, "KeyError: 'x'", e, 30) is False
+    assert dedup.claim(conn, fp, "KeyError: 'x'", e2, 30) is False
     conn.close()
 
 

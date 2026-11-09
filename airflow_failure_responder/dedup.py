@@ -73,11 +73,14 @@ def _connect(cfg: Dict[str, Any]) -> Optional[psycopg.Connection]:
         " suppressed int NOT NULL DEFAULT 0,"
         " affected jsonb NOT NULL DEFAULT '[]')"
     )
+    # Failure that opened the window; its own retry must not be suppressed (added after the first release)
+    conn.execute(f"ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS lead_key text")
     return conn
 
 
 def claim(conn: psycopg.Connection, fp: str, title: str, entry: Dict[str, Any], cooldown: int) -> bool:
     """True = suppress this failure (inside an open window); False = send the full analysis."""
+    key = "|".join(str(entry.get(k)) for k in ("dag_id", "run_id", "task_id", "try_number"))
     with conn.transaction():
         # -infinity: a brand-new row counts as an expired window
         conn.execute(
@@ -85,10 +88,13 @@ def claim(conn: psycopg.Connection, fp: str, title: str, entry: Dict[str, Any], 
             " ON CONFLICT (fp) DO NOTHING",
             (fp, title[:300]),
         )
-        in_window = conn.execute(
-            f"SELECT window_start > now() - make_interval(mins => %s) FROM {TABLE} WHERE fp = %s FOR UPDATE",
+        in_window, lead_key = conn.execute(
+            f"SELECT window_start > now() - make_interval(mins => %s), lead_key FROM {TABLE} WHERE fp = %s FOR UPDATE",
             (cooldown, fp),
-        ).fetchone()[0]
+        ).fetchone()
+        if in_window and lead_key == key:
+            # Retry or manual clear of the failure that opened the window (e.g. its card failed to send)
+            return False
         if in_window:
             conn.execute(
                 f"UPDATE {TABLE} SET suppressed = suppressed + 1, last_seen = now(),"
@@ -99,8 +105,8 @@ def claim(conn: psycopg.Connection, fp: str, title: str, entry: Dict[str, Any], 
             return True
         # Counts of a window whose summary failed to send are kept and reported with the next one
         conn.execute(
-            f"UPDATE {TABLE} SET window_start = now(), last_seen = now(), title = %s WHERE fp = %s",
-            (title[:300], fp),
+            f"UPDATE {TABLE} SET window_start = now(), last_seen = now(), title = %s, lead_key = %s WHERE fp = %s",
+            (title[:300], key, fp),
         )
         return False
 
