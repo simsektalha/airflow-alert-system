@@ -11,10 +11,10 @@ Terms in **bold** are defined in [GLOSSARY.md](GLOSSARY.md).
 ```mermaid
 flowchart TB
     fail["Task attempt fails<br/>(Airflow 3 worker)"] --> cb["on_failure_callback<br/>trigger_failure_responder.py"]
-    cb -- "JWT + try number" --> api[("Airflow REST API v2")]
-    cb -- "start responder<br/>argv: ids · stdin: token + config" --> fetch
+    cb -- "JWT · POST dagRuns<br/>conf: ids only" --> api[("Airflow REST API v2")]
+    api -- "queues run" --> fetch
 
-    subgraph responder["Responder · airflow_failure_responder/"]
+    subgraph responder["failure_analyzer DAG · analyze task"]
         fetch["1 · Fetch task log"] --> crop["2 · Crop to error window, redact secrets"]
         crop --> sync["3 · Sync incident records"]
         sync --> find["4 · Find similar incident records"]
@@ -32,11 +32,12 @@ flowchart TB
     llm -- "log or LLM unavailable" --> fb["Fallback alert"] --> teams
 ```
 
-1. **Callback** (runs inside the failed task's worker): gets a JWT from `/auth/token`, reads the try number, and starts the responder as a detached process. Identifiers go in argv; the token and config go over stdin, so they never show in `ps` or the task log.
-2. **Task log**: fetched from `/api/v2/.../logs/{try}`, cropped to the window around the error, then secrets (passwords, tokens, connection strings, emails, keys) are redacted.
-3. **Knowledge base**: rows of the Confluence incident table are stored in Postgres + pgvector. Only new or changed rows are embedded; rows removed from the page are deleted.
-4. **Analysis**: the closest incident records go into the prompt as `K1..Kn`. The LLM returns a structured analysis and the IDs it used. The code maps those IDs back to real records, so a **matched incident** on the card can't be invented.
-5. **Alert card**: posted to a Teams Workflows (Power Automate) webhook.
+1. **Callback** (runs inside the failed task's worker): gets a JWT from `/auth/token` and triggers one `failure_analyzer` DAG run. The run's `conf` holds only the DAG, run, task and try number. The run id is fixed per failed try, so a repeated callback does not analyze twice.
+2. **Analyzer task**: reads the Variable for settings and Airflow Connections for secrets, gets its own JWT, and runs the steps below. It has Airflow retries and shows up in the Airflow UI.
+3. **Task log**: fetched from `/api/v2/.../logs/{try}`, cropped to the window around the error, then secrets (passwords, tokens, connection strings, emails, keys) are redacted.
+4. **Knowledge base**: rows of the Confluence incident table are stored in Postgres + pgvector. Only new or changed rows are embedded; rows removed from the page are deleted.
+5. **Analysis**: the closest incident records go into the prompt as `K1..Kn`. The LLM returns a structured analysis and the IDs it used. The code maps those IDs back to real records, so a **matched incident** on the card can't be invented.
+6. **Alert card**: posted to a Teams Workflows (Power Automate) webhook.
 
 ## What the alert card shows
 
@@ -60,31 +61,38 @@ Card text and the LLM prompt are in Turkish.
 ```bash
 cp -r airflow_failure_responder /path/to/airflow/dags/
 cp dags/callbacks/trigger_failure_responder.py /path/to/airflow/dags/callbacks/
-pip install -r requirements.txt   # in the interpreter set as config.invoke.python
+cp dags/failure_analyzer.py /path/to/airflow/dags/
+pip install -r requirements.txt   # in the worker image
 ```
 
-**2. Configure** the Airflow Variable `v_callback_fetch_failed_task` (minimal example; all keys in [docs/CONFIGURATION.md](docs/CONFIGURATION.md)):
+Unpause `failure_analyzer` (new DAGs start paused).
+
+**2. Create the Connections** (secrets never go in the Variable; details in [docs/CONFIGURATION.md](docs/CONFIGURATION.md#connections)):
+
+| Conn id | What to fill |
+|---|---|
+| `failure_responder_airflow_api` | host = Airflow API base URL, login/password of a FAB user that can read logs and trigger DAGs (required) |
+| `failure_responder_llm` | password = gateway API key |
+| `failure_responder_kb_db` | Postgres connection of the knowledge base |
+| `failure_responder_confluence` | login/password |
+| `failure_responder_teams` | host = full Teams webhook URL |
+
+**3. Configure** the Airflow Variable `v_callback_fetch_failed_task` (minimal example; all keys in [docs/CONFIGURATION.md](docs/CONFIGURATION.md)):
 
 ```json
 {
-  "base_url": "https://airflow.example.com",
-  "auth": { "basic": { "username": "svc_alerts", "password": "..." } },
-  "llm": { "base_url": "https://llm-gateway.example.com/v1", "api_key": "...", "model": "qwen2.5-72b-instruct" },
-  "knowledge": {
-    "embedder": { "base_url": "https://llm-gateway.example.com/v1", "id": "bge-m3" },
-    "vector_db": { "db_url": "postgresql://kb:...@pg.example.com:5432/kb" }
-  },
+  "llm": { "base_url": "https://llm-gateway.example.com/v1", "model": "qwen2.5-72b-instruct" },
+  "knowledge": { "embedder": { "base_url": "https://llm-gateway.example.com/v1", "id": "bge-m3" } },
   "confluence": {
     "base_url": "https://confluence.example.com",
     "page_ids": ["123456"],
-    "page_url": "https://confluence.example.com/x/AbCd",
-    "auth": { "username": "svc_alerts", "password": "..." }
+    "page_url": "https://confluence.example.com/x/AbCd"
   },
-  "output": { "method": "teams", "teams_webhook": "https://...powerplatform.com/..." }
+  "output": { "method": "teams" }
 }
 ```
 
-**3. Attach** the callback to your DAGs:
+**4. Attach** the callback to your DAGs:
 
 ```python
 from callbacks.trigger_failure_responder import on_failure_trigger_fetcher
@@ -92,16 +100,17 @@ from callbacks.trigger_failure_responder import on_failure_trigger_fetcher
 default_args = {"on_failure_callback": on_failure_trigger_fetcher}
 ```
 
-Without `knowledge` and `confluence` the analysis runs from the task log alone. Without `llm` every failure gets a fallback alert.
+Without `failure_responder_kb_db` and `confluence` the analysis runs from the task log alone. Without `llm` every failure gets a fallback alert.
 
 ## Repository layout
 
 ```text
 dags/
-├── callbacks/trigger_failure_responder.py  # on_failure_callback: JWT, try number, start responder
+├── callbacks/trigger_failure_responder.py  # on_failure_callback: JWT, trigger failure_analyzer run
+├── failure_analyzer.py                     # analyzer DAG: Variable + Connections → run_analysis
 └── example.py                              # DAG that fails with a random realistic error
-airflow_failure_responder/                  # responder, runs as a separate process
-├── airflow_failure_responder.py            # entrypoint: fetch → crop/redact → knowledge → LLM → output
+airflow_failure_responder/                  # analysis code, imported by the analyzer task
+├── airflow_failure_responder.py            # run_analysis: fetch → crop/redact → knowledge → LLM → output
 ├── airflow_log_client.py                   # GET the v2 log, flatten structured log JSON to text
 ├── log_processing.py                       # crop error window, last error line
 ├── redaction.py                            # secret patterns
@@ -129,7 +138,6 @@ For an end-to-end check, attach the callback, trigger `example_realistic_failure
 
 ## Roadmap
 
-- **Analyzer DAG**: the callback triggers a `failure_analyzer` DAG run instead of a detached process. You get retries and Airflow UI visibility, and secrets come from Connections.
 - **Daily `kb_ingest` DAG**: Confluence sync moves out of the per-failure path.
 - **Dedup**: one alert card per root-cause fingerprint within a cooldown, followed by a "N tasks affected" summary.
 - **Airflow context tools**: the LLM can read the task instance, the DAG source (redacted), the last successful run and other failures in the same run.
