@@ -1,260 +1,152 @@
-# Configuration Guide
+# Configuration
 
-Complete configuration options for the Airflow AI-Powered Failure Analysis System.
+All configuration lives in one Airflow Variable, `v_callback_fetch_failed_task` (JSON). The callback reads it, removes `auth`, and hands the rest to the responder over stdin.
 
-## 📋 Configuration Structure
-
-The system uses a single Airflow Variable `v_callback_fetch_failed_task` containing JSON configuration:
+## Full example
 
 ```json
 {
-  "base_url": "https://your-airflow-instance:8080",
-  "auth": {
-    "basic": {
-      "username": "your-username",
-      "password": "your-password"
-    }
-  },
-  "tls": {
+  "base_url": "https://airflow.example.com",
+  "auth": { "basic": { "username": "svc_alerts", "password": "..." } },
+  "tls": { "verify": "/etc/ssl/certs/internal-ca.pem", "insecure_global_patch": false },
+  "timeouts": { "connect": 10, "total": 30 },
+  "pagination": { "max_bytes": 5000000 },
+
+  "llm": {
+    "base_url": "https://llm-gateway.example.com/v1",
+    "api_key": "...",
+    "model": "qwen2.5-72b-instruct",
+    "temperature": 0.1,
+    "max_tokens": 4000,
+    "timeout": 120,
+    "response_format": "json_schema",
     "verify": true
   },
-  "timeouts": {
-    "connect": 10.0,
-    "total": 30.0
+
+  "knowledge": {
+    "embedder": {
+      "base_url": "https://llm-gateway.example.com/v1",
+      "api_key": "...",
+      "id": "bge-m3",
+      "timeout": 30,
+      "verify": true
+    },
+    "vector_db": { "db_url": "postgresql://kb:...@pg.example.com:5432/kb" },
+    "table": "airflow_kb_rows",
+    "top_k": 5
   },
-  "llm": {
-    "driver": "openai_like",
-    "model": "gpt-4o-mini",
-    "base_url": "https://api.openai.com/v1",
-    "api_key": "your-api-key",
-    "temperature": 0.1,
-    "max_tokens": 800
+
+  "confluence": {
+    "base_url": "https://confluence.example.com",
+    "page_ids": ["123456"],
+    "page_url": "https://confluence.example.com/x/AbCd",
+    "auth": { "username": "svc_alerts", "password": "..." }
   },
+
   "output": {
-    "method": "stdout",
-    "file_path": "/tmp/failed_task_log.json",
-    "teams_webhook": "https://api.powerplatform.com/...",
+    "method": "teams",
+    "teams_webhook": "https://...powerplatform.com/...",
     "teams_verify_ssl": true
   },
-  "pdf_knowledge": {
-    "path": "/path/to/Problem_Solutions.pdf",
-    "vector_db": {
-      "type": "lancedb",
-      "table_name": "vectors",
-      "uri": "./lancedb"
-    },
-    "embedder": {
-      "type": "ollama",
-      "id": "nomic-embed-text"
-    },
-    "recreate": false,
-    "upsert": true,
-    "async_load": false
-  },
-  "script_path": "/path/to/airflow/dags/airflow_failure_responder.py",
-  "invoke": {
-    "mode": "detach",
-    "timeout_sec": 30,
-    "python": "/usr/bin/python3"
-  }
+
+  "script_path": "/opt/airflow/dags/airflow_failure_responder/airflow_failure_responder.py",
+  "invoke": { "python": "/opt/venvs/responder/bin/python", "mode": "detach", "timeout_sec": 30 }
 }
 ```
 
-## 🔧 Configuration Sections
+## Airflow API
 
-### Airflow Connection
-- **base_url**: Airflow instance URL
-- **auth.basic**: Username and password for Airflow API
-- **tls.verify**: SSL verification (true/false or CA bundle path)
-- **timeouts**: Connection and total timeout settings
+| Key | Default | Notes |
+|---|---|---|
+| `base_url` | (required) | Airflow webserver URL. Also builds the "Log'a Git" link on the alert card. `api_base_url` is accepted as an alias. |
+| `auth.basic.username` / `password` | (required) | FAB user that may read task instances and logs. Used only by the callback to get a JWT from `/auth/token`. Never passed to the responder. |
+| `tls.verify` | `true` | `true`, `false`, or a CA bundle path. Applies to the Airflow API and Confluence, and is the default for the LLM and embedder. |
+| `tls.insecure_global_patch` | `false` | Disables TLS verification for every client in the responder. Last resort; prefer a CA bundle path. |
+| `timeouts.connect` / `total` | `10` / `30` | Seconds, for Airflow API calls. |
+| `pagination.max_bytes` | `5000000` | Task log is truncated to this many characters after fetching. |
 
-### LLM Providers
+## LLM
 
-#### OpenAI-like
-```json
-"llm": {
-  "driver": "openai_like",
-  "base_url": "https://api.openai.com/v1",
-  "api_key": "sk-...",
-  "model": "gpt-4o-mini",
-  "temperature": 0.1,
-  "max_tokens": 800
-}
-```
+Any OpenAI-compatible chat completions endpoint: vLLM, LiteLLM, Ollama (`/v1`), or OpenAI.
 
-#### Ollama
-```json
-"llm": {
-  "driver": "ollama",
-  "host": "http://localhost:11434",
-  "model": "llama3.1"
-}
-```
+| Key | Default | Notes |
+|---|---|---|
+| `llm.base_url` | (none) | If missing, no analysis is made and every failure gets a fallback alert. Old Ollama-style `llm.host` still works (`/v1` is appended). |
+| `llm.api_key` | `"none"` | Sent as a Bearer token. |
+| `llm.model` | `llama3.1` | |
+| `llm.temperature` | `0.1` | |
+| `llm.max_tokens` | `4000` | Lower values can truncate the JSON analysis. |
+| `llm.timeout` | `120` | Seconds. |
+| `llm.response_format` | `json_schema` | `json_schema` sends the analysis schema (vLLM guided decoding, OpenAI structured outputs). Use `json_object` or `none` if the gateway rejects it; the response parser tolerates fences and surrounding prose. |
+| `llm.verify` | `tls.verify` | Override when the gateway's certificate is signed by a different CA than Airflow's. |
 
-#### vLLM
-```json
-"llm": {
-  "driver": "vllm",
-  "base_url": "http://localhost:8000/v1",
-  "model": "your-model"
-}
-```
+`llm.driver` from older configs is ignored.
 
-### Output Methods
+## Knowledge base
 
-#### stdout (Default)
-```json
-"output": {
-  "method": "stdout"
-}
-```
+**Incident records** from Confluence, stored in Postgres with the `pgvector` extension. The table is created on first use (`CREATE EXTENSION IF NOT EXISTS vector` needs the extension to be installed, or a role allowed to create it).
 
-#### File Output
-```json
-"output": {
-  "method": "file",
-  "file_path": "/tmp/failed_task_log.json"
-}
-```
+| Key | Default | Notes |
+|---|---|---|
+| `knowledge.vector_db.db_url` | (none) | Postgres URL. If missing, the analysis runs without incident records. `postgresql+psycopg://` URLs from older configs are accepted. |
+| `knowledge.table` | `airflow_kb_rows` | One row per incident record. |
+| `knowledge.top_k` | `5` | Incident records put in the prompt. |
+| `knowledge.embedder.base_url` | (none) | OpenAI-compatible `/embeddings` endpoint, e.g. an embedding model served by vLLM on a GPU cluster, LiteLLM, or Ollama. Ollama-style `embedder.host` still works. |
+| `knowledge.embedder.id` | `nomic-embed-text` | Embedding model. Changing it re-embeds every incident record on the next sync. |
+| `knowledge.embedder.api_key` | `"none"` | |
+| `knowledge.embedder.timeout` | `30` | Seconds. |
+| `knowledge.embedder.verify` | `tls.verify` | Same as `llm.verify`. |
 
-#### Microsoft Teams
-```json
-"output": {
-  "method": "teams",
-  "teams_webhook": "https://api.powerplatform.com/...",
-  "teams_verify_ssl": true
-}
-```
+The query sent to the embedder is the last error line plus the last 3,000 characters of the redacted task log.
 
-### Script Execution
-- **mode**: `"detach"` (background) or `"run"` (blocking)
-- **timeout_sec**: Maximum execution time in seconds
-- **python**: Custom Python interpreter path
+## Confluence
 
-## 🤖 AI Team Configuration
+The responder reads the **first table** of each page (Confluence Data Center REST API, `body.storage`). Headers are matched case- and space-insensitively:
 
-The system uses a sequential team of specialized AI agents:
+| Field | Accepted headers |
+|---|---|
+| Date | `Tarih`, `Date` |
+| Environment | `Ortam`, `Environment` |
+| Service | `Servis / Sistem`, `Servis/Sistem`, `Service / System` |
+| Owner | `Sorumlu`, `Owner` |
+| Summary | `Hata / Olay Özeti`, `Hata/Olay Özeti`, `Incident Summary` |
+| Resolution | `Çözüm / Not`, `Çözüm/Not`, `Resolution / Note` |
+| Status | `Durum`, `Status` |
+| Link | `Link`, `URL` |
 
-### Agent Roles
-- **LogIngestor**: Extracts error information from raw logs
-- **RootCauseAnalyst**: Searches knowledge base for similar patterns, identifies root cause
-- **FixPlanner**: Finds documented solutions from knowledge base, creates fix plan
-- **Verifier**: Validates solutions against knowledge base, outputs final JSON
+| Key | Default | Notes |
+|---|---|---|
+| `confluence.base_url` | (none) | |
+| `confluence.page_ids` | (none) | List of page IDs. A single `confluence.page_id` is still accepted. |
+| `confluence.auth.username` / `password` | (none) | |
+| `confluence.page_url` | (none) | Shown as the "📄 Confluence" button on the alert card; the button is hidden when unset. |
 
-### Knowledge Base Integration
-All agents have access to the PDF knowledge base and will:
-1. Search for similar problems and solutions first
-2. Reference documented solutions from your PDF files
-3. Validate solutions against best practices in the knowledge base
+Sync runs before each analysis. When nothing changed, the cost is one page fetch and one query. If a page parses to zero rows (layout change, partial page), the stored incident records are kept.
 
-## 📄 PDF Knowledge Base
+## Output
 
-### Default Configuration (LanceDB + Ollama)
-```json
-"pdf_knowledge": {
-  "path": "./docs/Problem_Solutions.pdf",
-  "vector_db": {
-    "type": "lancedb",
-    "table_name": "vectors",
-    "uri": "./lancedb"
-  },
-  "embedder": {
-    "type": "ollama",
-    "id": "nomic-embed-text"
-  },
-  "recreate": false,
-  "upsert": true
-}
-```
+| Key | Default | Notes |
+|---|---|---|
+| `output.method` | `stdout` | `stdout`, `file`, or `teams`. |
+| `output.file_path` | `/tmp/failed_task_log.json` | For `file`. |
+| `output.teams_webhook` | (none) | Teams Workflows (Power Automate) webhook URL. Falls back to stdout if missing. |
+| `output.teams_verify_ssl` | `true` | Set `false` only behind a TLS-inspecting proxy without its CA. |
 
-### Vector Database Options
+## Running the responder
 
-#### LanceDB (Default)
-```json
-"vector_db": {
-  "type": "lancedb",
-  "table_name": "vectors",
-  "uri": "./lancedb"
-}
-```
+| Key | Default | Notes |
+|---|---|---|
+| `script_path` | `/usr/local/airflow/dags/airflow_failure_responder/airflow_failure_responder.py` | |
+| `invoke.python` | the worker's interpreter | Interpreter with `requirements.txt` installed. |
+| `invoke.mode` | `detach` | `detach` returns immediately. `run` blocks the callback until the responder exits or times out. |
+| `invoke.timeout_sec` | `30` | Only for `run`. Too short for a typical LLM call. |
 
-#### Chroma
-```json
-"vector_db": {
-  "type": "chroma",
-  "collection_name": "pdf_documents",
-  "persist_directory": "./chroma_db"
-}
-```
+## Troubleshooting
 
-#### PgVector
-```json
-"vector_db": {
-  "type": "pgvector",
-  "table_name": "pdf_documents",
-  "db_url": "postgresql+psycopg://user:pass@localhost:5432/db"
-}
-```
-
-### Embedder Options
-
-#### Ollama (Default)
-```json
-"embedder": {
-  "type": "ollama",
-  "id": "nomic-embed-text"
-}
-```
-
-#### OpenAI
-```json
-"embedder": {
-  "type": "openai",
-  "api_key": "your-api-key",
-  "base_url": "https://api.openai.com/v1",
-  "id": "text-embedding-3-small"
-}
-```
-
-See [PDF Integration Guide](PDF_INTEGRATION.md) for detailed PDF configuration.
-
-## 🖥️ GPU Cluster Embedders
-
-See [GPU Cluster Setup](GPU_CLUSTER.md) for custom embedder configuration.
-
-## 🔍 Advanced Options
-
-### Log Processing
-- **tail_lines**: Number of tail lines to preserve (default: 160)
-- **max_log_chars**: Maximum characters for log tail (default: 1800)
-
-### Error Handling
-- **retry_attempts**: Number of retry attempts for failed requests
-- **backoff_factor**: Exponential backoff factor for retries
-
-### Performance
-- **async_load**: Load PDF knowledge base asynchronously
-- **upsert**: Update existing documents instead of recreating
-- **recreate**: Force recreation of knowledge base
-
-## 🧪 Testing Configuration
-
-Test your configuration with the example DAG:
-```python
-# Trigger the example DAG to test your configuration
-# Check Airflow logs for any configuration errors
-```
-
-## 🔧 Troubleshooting
-
-### Common Issues
-1. **Authentication Errors**: Verify username/password and base_url
-2. **LLM Errors**: Check API keys and model availability
-3. **PDF Errors**: Ensure PDF file exists and is accessible
-4. **Output Errors**: Verify file paths and Teams webhook URLs
-
-### Debug Mode
-Enable debug logging by setting log level to DEBUG in your Airflow configuration.
-
-### Validation
-The system validates configuration on startup and logs any issues found.
+| Symptom | Likely cause |
+|---|---|
+| Every alert is a fallback alert ("Otomatik analiz yapılamadı") | `llm.base_url` missing, gateway unreachable, or it rejects `json_schema` → set `llm.response_format`. The responder log shows the exception. |
+| `CERTIFICATE_VERIFY_FAILED` on LLM or embedder | `tls.verify` points at the Airflow CA → set `llm.verify` / `knowledge.embedder.verify`. |
+| "Kullanılan Dokümanlar" is always empty | No `knowledge.vector_db.db_url`, empty table, or no incident record was relevant. Check the `[kb] retrieved N docs (distances=...)` log line. |
+| `different vector dimensions` | Rows embedded by another model in the same table. Fixed on the next sync; if the page now parses to zero rows, clear the table. |
+| Callback logs `token request failed` | Wrong `base_url` or FAB credentials, or `/auth/token` is not reachable from the worker. |
