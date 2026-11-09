@@ -3,22 +3,21 @@ failure_analyzer: one run per failed task try, triggered by callbacks.trigger_fa
 
 conf = {dag_id, run_id, task_id, try_number}. Non-secret config comes from the Variable
 'v_callback_fetch_failed_task'; secrets come from the failure_responder_* Connections.
+The responder code is imported from the Variable's `responder_dir` (default: dags/airflow_failure_responder/).
 No on_failure_callback here: a failing analyzer must not trigger another analyzer run.
 
 analyze -> feedback (HITL, 24h) -> record_feedback. analyze short-circuits the feedback steps for
 fallback alerts, dedup-suppressed failures and setups without a knowledge base database.
 """
-import json
-import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
 from airflow.providers.standard.operators.hitl import HITLOperator
-from airflow.sdk import DAG, Param, Variable, get_current_context, task
+from airflow.sdk import DAG, Param, get_current_context, task
 
-# Responder modules use flat imports; they are deployed as dags/airflow_failure_responder/
-RESPONDER_DIR = str(Path(__file__).resolve().parent / "airflow_failure_responder")
+# Used when the Variable has no responder_dir
+DEFAULT_RESPONDER_DIR = str(Path(__file__).resolve().parent / "airflow_failure_responder")
 
 
 with DAG(
@@ -36,24 +35,24 @@ with DAG(
     def analyze():
         import asyncio
 
-        if RESPONDER_DIR not in sys.path:
-            # Front of path: dags/ also holds the airflow_failure_responder/ folder of the same name
-            sys.path.insert(0, RESPONDER_DIR)
-        # Imported here so DAG parsing does not load openai/psycopg
-        from airflow_failure_responder import apply_connections, run_analysis
         from callbacks.trigger_failure_responder import (
             _acquire_token_or_raise,
             get_conn_or_none,
             load_api_access,
+            load_responder_config,
             load_tls_timeouts,
         )
+
+        raw_cfg = load_responder_config(DEFAULT_RESPONDER_DIR)
+        # Imported here (after the path is set) so DAG parsing does not load openai/psycopg
+        from airflow_failure_responder import apply_connections, run_analysis
 
         conf = get_current_context()["dag_run"].conf or {}
         ids = {k: conf.get(k) for k in ("dag_id", "run_id", "task_id", "try_number")}
         if not all(ids.values()):
             raise ValueError(f"conf needs dag_id, run_id, task_id, try_number; got {sorted(conf)}")
 
-        cfg = apply_connections(json.loads(Variable.get("v_callback_fetch_failed_task")), get_conn_or_none)
+        cfg = apply_connections(raw_cfg, get_conn_or_none)
         base_url, username, password = load_api_access()
         verify, timeouts = load_tls_timeouts()
         token = _acquire_token_or_raise(base_url, username, password, verify, timeouts)
@@ -93,13 +92,13 @@ with DAG(
 
     @task(retries=2)
     def record_feedback(answer):
-        if RESPONDER_DIR not in sys.path:
-            sys.path.insert(0, RESPONDER_DIR)
+        from callbacks.trigger_failure_responder import get_conn_or_none, load_responder_config
+
+        raw_cfg = load_responder_config(DEFAULT_RESPONDER_DIR)
         from airflow_failure_responder import apply_connections
-        from callbacks.trigger_failure_responder import get_conn_or_none
         from feedback import parse_hitl_answer, record_verdict
 
-        cfg = apply_connections(json.loads(Variable.get("v_callback_fetch_failed_task")), get_conn_or_none)
+        cfg = apply_connections(raw_cfg, get_conn_or_none)
         parsed = parse_hitl_answer(answer)
         record_verdict(cfg, get_current_context()["dag_run"].run_id, **parsed)
         return parsed["verdict"]

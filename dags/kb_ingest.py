@@ -7,14 +7,13 @@ Only new or changed rows are embedded; an empty page parse keeps the stored rows
 The failure_analyzer only queries the knowledge base, so a failed sync means stale
 incident records, never a missing alert. Trigger it by hand after deploy or a page edit.
 """
-import json
-import sys
 from datetime import datetime
 from pathlib import Path
 
-from airflow.sdk import DAG, Variable, task
+from airflow.sdk import DAG, task
 
-RESPONDER_DIR = str(Path(__file__).resolve().parent / "airflow_failure_responder")
+# Used when the Variable has no responder_dir
+DEFAULT_RESPONDER_DIR = str(Path(__file__).resolve().parent / "airflow_failure_responder")
 
 with DAG(
     dag_id="kb_ingest",
@@ -28,17 +27,16 @@ with DAG(
 
     @task
     def sync_confluence():
-        if RESPONDER_DIR not in sys.path:
-            # Front of path: dags/ also holds the airflow_failure_responder/ folder of the same name
-            sys.path.insert(0, RESPONDER_DIR)
+        from callbacks.trigger_failure_responder import get_conn_or_none, load_responder_config
+
+        raw_cfg = load_responder_config(DEFAULT_RESPONDER_DIR)
         from airflow_failure_responder import apply_connections
         from airflow_log_client import _derive_verify
-        from callbacks.trigger_failure_responder import get_conn_or_none
         from dedup import flush_summaries
         from knowledge import ingest_confluence
         from output import output_summary
 
-        cfg = apply_connections(json.loads(Variable.get("v_callback_fetch_failed_task")), get_conn_or_none)
+        cfg = apply_connections(raw_cfg, get_conn_or_none)
         if (cfg.get("tls") or {}).get("insecure_global_patch"):
             from ssl_patch import apply_insecure_ssl_patch
 

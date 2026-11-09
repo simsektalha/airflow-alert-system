@@ -103,3 +103,32 @@ def test_apply_connections_missing_connections_leave_cfg_alone():
     from airflow_failure_responder import apply_connections
 
     assert apply_connections({"llm": {"model": "m"}}, lambda _id: None) == {"llm": {"model": "m"}}
+
+
+def test_load_responder_config_uses_variable_dir_then_default(tmp_path, monkeypatch):
+    import json as _json
+
+    cb = _callback_module()
+    custom = tmp_path / "anywhere"
+    custom.mkdir()
+    (custom / "airflow_failure_responder.py").write_text("")
+    default = tmp_path / "default"
+    default.mkdir()
+    (default / "airflow_failure_responder.py").write_text("")
+
+    monkeypatch.setattr(cb.Variable, "get", lambda key: _json.dumps({"responder_dir": str(custom), "llm": {}}))
+    cfg = cb.load_responder_config(str(default))
+    assert cfg["llm"] == {} and sys.path[0] == str(custom)
+
+    monkeypatch.setattr(cb.Variable, "get", lambda key: "{}")
+    cb.load_responder_config(str(default))
+    assert sys.path[0] == str(default)
+
+    monkeypatch.setattr(cb.Variable, "get", lambda key: _json.dumps({"responder_dir": str(tmp_path / "missing")}))
+    try:
+        cb.load_responder_config(str(default))
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as e:
+        assert "missing" in str(e)
+    sys.path.remove(str(custom))
+    sys.path.remove(str(default))

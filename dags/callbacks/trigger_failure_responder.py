@@ -12,6 +12,8 @@ Airflow 3.x on_failure_callback: triggers one `failure_analyzer` DAG run per fai
 import hashlib
 import json
 import logging
+import os
+import sys
 from typing import Tuple, Union
 from urllib.parse import urljoin
 
@@ -25,6 +27,7 @@ if not LOG.handlers:
 ANALYZER_DAG_ID = "failure_analyzer"
 API_CONN_ID = "failure_responder_airflow_api"
 MAX_RUN_ID_LEN = 250
+VARIABLE_KEY = "v_callback_fetch_failed_task"
 
 
 def _derive_verify(tls_cfg: dict) -> Union[bool, str]:
@@ -91,6 +94,19 @@ def get_conn_or_none(conn_id):
         return None
 
 
+def load_responder_config(default_dir: str) -> dict:
+    """Variable JSON for the DAG tasks. Puts the responder code folder on sys.path first:
+    `responder_dir` from the Variable (any folder on the workers), else default_dir."""
+    cfg = json.loads(Variable.get(VARIABLE_KEY))
+    responder_dir = cfg.get("responder_dir") or default_dir
+    if not os.path.isfile(os.path.join(responder_dir, "airflow_failure_responder.py")):
+        raise RuntimeError(f"responder_dir {responder_dir!r} does not contain airflow_failure_responder.py on this worker")
+    if responder_dir not in sys.path:
+        # Front of path: dags/ may also hold an airflow_failure_responder/ folder of the same name
+        sys.path.insert(0, responder_dir)
+    return cfg
+
+
 def load_api_access(conn_getter=Connection.get) -> Tuple[str, str, str]:
     """(base_url, login, password) from the API Connection. Shared with the analyzer DAG."""
     conn = conn_getter(API_CONN_ID)
@@ -102,7 +118,7 @@ def load_api_access(conn_getter=Connection.get) -> Tuple[str, str, str]:
 
 def load_tls_timeouts() -> Tuple[Union[bool, str], Tuple[float, float]]:
     try:
-        cfg = json.loads(Variable.get("v_callback_fetch_failed_task"))
+        cfg = json.loads(Variable.get(VARIABLE_KEY))
     except Exception:
         LOG.warning("[cfg] v_callback_fetch_failed_task unreadable; using default tls/timeouts")
         cfg = {}

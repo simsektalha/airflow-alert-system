@@ -136,14 +136,16 @@ A **fallback alert** has the same layout with the last error line as summary and
 
 ## Quick start
 
-**1. Deploy** to the Airflow DAGs folder:
+**1. Deploy.** The DAGs and the callback go to the Airflow DAGs folder; the analysis code can live in any folder on the workers:
 
 ```bash
-cp -r airflow_failure_responder /path/to/airflow/dags/
+cp -r airflow_failure_responder /opt/failure_responder          # any folder, same path on every worker
 cp dags/callbacks/trigger_failure_responder.py /path/to/airflow/dags/callbacks/
 cp dags/failure_analyzer.py dags/kb_ingest.py /path/to/airflow/dags/
 pip install -r requirements.txt   # in the worker image
 ```
+
+Point the Variable's `responder_dir` at that folder (step 3). Without `responder_dir`, the code is expected at `dags/airflow_failure_responder/`; in that case add `airflow_failure_responder/` to `dags/.airflowignore`, or the DAG processor reports its modules as broken DAGs.
 
 Unpause `failure_analyzer` and `kb_ingest` (new DAGs start paused), then trigger `kb_ingest` once so the knowledge base is filled before the first failure.
 
@@ -161,6 +163,7 @@ Unpause `failure_analyzer` and `kb_ingest` (new DAGs start paused), then trigger
 
 ```json
 {
+  "responder_dir": "/opt/failure_responder",
   "llm": { "base_url": "https://llm-gateway.example.com/v1", "model": "qwen2.5-72b-instruct" },
   "knowledge": { "embedder": { "base_url": "https://llm-gateway.example.com/v1", "id": "bge-m3" } },
   "confluence": {
@@ -190,7 +193,7 @@ dags/
 ├── failure_analyzer.py                     # analyzer DAG: analyze → feedback (HITL) → record_feedback
 ├── kb_ingest.py                            # daily Confluence → knowledge base sync
 └── example.py                              # DAG that fails with a random realistic error
-airflow_failure_responder/                  # analysis code, imported by the analyzer task
+airflow_failure_responder/                  # analysis code, imported from the Variable's responder_dir
 ├── airflow_failure_responder.py            # run_analysis: fetch → crop/redact → dedup → knowledge → LLM → output
 ├── airflow_log_client.py                   # GET the v2 log, flatten structured log JSON to text
 ├── log_processing.py                       # crop error window, last error line

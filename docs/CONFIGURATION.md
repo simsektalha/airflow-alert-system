@@ -18,6 +18,7 @@ A missing optional Connection leaves that part unconfigured, the same as a missi
 
 ```json
 {
+  "responder_dir": "/opt/failure_responder",
   "tls": { "verify": "/etc/ssl/certs/internal-ca.pem", "insecure_global_patch": false },
   "timeouts": { "connect": 10, "total": 30 },
   "pagination": { "max_bytes": 5000000 },
@@ -59,6 +60,14 @@ A missing optional Connection leaves that part unconfigured, the same as a missi
   }
 }
 ```
+
+## Responder code location
+
+| Key | Default | Notes |
+|---|---|---|
+| `responder_dir` | `dags/airflow_failure_responder/` | Folder that holds the `airflow_failure_responder/` files (`airflow_failure_responder.py`, `knowledge.py`, ...). It can be any folder outside Airflow, but it must exist at the same path on every worker that runs `failure_analyzer` and `kb_ingest`, readable by the Airflow user. The DAG processor and scheduler do not need it. A wrong path fails the task with `responder_dir ... does not contain airflow_failure_responder.py on this worker`. |
+
+The callback and the two DAG files stay in the DAGs folder. If you keep the code under `dags/`, add `airflow_failure_responder/` to `dags/.airflowignore`: otherwise the DAG processor parses its modules and reports them as broken DAGs.
 
 ## Airflow API
 
@@ -190,6 +199,8 @@ Answers are stored in the `analysis_feedback` table of the knowledge base databa
 | Symptom | Likely cause |
 |---|---|
 | `[llm] tool calling failed` in the analyzer log | The gateway rejects `tools`. Analysis still runs as a single call; set `llm.tools: false` to skip the failed attempt. |
+| `analyze` / `kb_ingest` fail with `responder_dir ... does not contain airflow_failure_responder.py` | `responder_dir` is wrong or the folder is missing on that worker. No alert is sent for these failures, so check the `failure_analyzer` grid. |
+| Broken DAG errors for `airflow_failure_responder/*.py` | The code is under `dags/` without an `.airflowignore` entry. Move it out and set `responder_dir`, or add `airflow_failure_responder/` to `dags/.airflowignore`. |
 | Every alert is a fallback alert ("Otomatik analiz yapılamadı") | `llm.base_url` missing, gateway unreachable, or it rejects `json_schema` → set `llm.response_format`. The `analyze` task log shows the exception. |
 | `CERTIFICATE_VERIFY_FAILED` on LLM or embedder | `tls.verify` points at the Airflow CA → set `llm.verify` / `knowledge.embedder.verify`. |
 | "Kullanılan Dokümanlar" is always empty | No `knowledge.vector_db.db_url`, empty table, or no incident record was relevant. Check the `[kb] retrieved N docs (distances=...)` log line. |
