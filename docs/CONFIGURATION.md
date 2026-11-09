@@ -83,8 +83,21 @@ Any OpenAI-compatible chat completions endpoint: vLLM, LiteLLM, Ollama (`/v1`), 
 | `llm.timeout` | `120` | Seconds. |
 | `llm.response_format` | `json_schema` | `json_schema` sends the analysis schema (vLLM guided decoding, OpenAI structured outputs). Use `json_object` or `none` if the gateway rejects it; the response parser tolerates fences and surrounding prose. |
 | `llm.verify` | `tls.verify` | Override when the gateway's certificate is signed by a different CA than Airflow's. |
+| `llm.tools` | `true` | Before the analysis the model may read Airflow context through tools (below). Set `false` for a gateway without tool calling; a tool-calling error also falls back to the single call on its own. |
+| `llm.max_tool_rounds` | `4` | Tool-calling rounds before the final structured call. |
 
 `llm.driver` from older configs is ignored.
+
+**Context tools.** All are read-only `/api/v2` calls with the analyzer's JWT, scoped to the failure being analyzed (they take no arguments, so the model cannot read other DAGs). Each output is redacted and cut to 8,000 characters.
+
+| Tool | Returns |
+|---|---|
+| `get_task_instance` | operator, state, tries, timing, host, pool, queue, executor (no rendered fields or executor config: they can hold secrets) |
+| `get_dag_source` | the DAG file, redacted |
+| `get_last_successful_run` | the last `success` run of the DAG, with this task's duration and tries in it |
+| `get_other_failures_in_run` | other `failed` / `upstream_failed` tasks of the same run (ids only) |
+
+The model calls them in tool rounds; what it read is then put into the final call as plain text, and that call uses `llm.response_format`. Similar incident records are not a tool: they are always in the prompt as `K1..Kn`. The FAB user needs read access to DAG code (`DAG Code.can_read`) for `get_dag_source`; without it the tool returns an error and the analysis goes on.
 
 ## Knowledge base
 
@@ -164,6 +177,7 @@ The callback only triggers a run; the analysis runs as the `analyze` task of `fa
 
 | Symptom | Likely cause |
 |---|---|
+| `[llm] tool calling failed` in the analyzer log | The gateway rejects `tools`. Analysis still runs as a single call; set `llm.tools: false` to skip the failed attempt. |
 | Every alert is a fallback alert ("Otomatik analiz yapılamadı") | `llm.base_url` missing, gateway unreachable, or it rejects `json_schema` → set `llm.response_format`. The responder log shows the exception. |
 | `CERTIFICATE_VERIFY_FAILED` on LLM or embedder | `tls.verify` points at the Airflow CA → set `llm.verify` / `knowledge.embedder.verify`. |
 | "Kullanılan Dokümanlar" is always empty | No `knowledge.vector_db.db_url`, empty table, or no incident record was relevant. Check the `[kb] retrieved N docs (distances=...)` log line. |
