@@ -1,31 +1,30 @@
 # callbacks/trigger_failure_responder.py
 """
-Airflow 3.x compatible on_failure_callback (single-method, no fallbacks).
+Airflow 3.x on_failure_callback: triggers one `failure_analyzer` DAG run per failed try.
 
-Behaviour:
-  - Read JSON config from Airflow Variable 'v_callback_fetch_failed_task'
-  - Expect credentials in cfg['auth']['basic']['username','password'] and api_base_url (or base_url)
-  - POST {api_base_url}/auth/token -> get JWT
-  - GET /api/v2/dags/{dag_id}/dagRuns/{run_id}/taskInstances/{task_id} with Bearer token -> extract try_number
-  - Build logs URL (/api/v2/.../logs/{try})
-  - Invoke responder script with --log-url and dag/run/task/try identifiers in argv,
-    and {"token": <jwt>, "config": <cfg without auth>} as JSON on stdin.
-    Secrets never go to argv (visible in `ps`) or to the task log.
-  - No fallback, no BasicAuth reuse.
+  - Airflow API URL + FAB credentials come from Connection 'failure_responder_airflow_api'
+    (host = API base URL, login/password).
+  - tls/timeouts come from Airflow Variable 'v_callback_fetch_failed_task'.
+  - POST {base}/auth/token -> JWT, then POST /api/v2/dags/failure_analyzer/dagRuns with ids only in conf.
+  - dag_run_id is deterministic per failed try, so a repeated callback gets 409 instead of a second analysis.
+  - Never raises: a failed trigger is logged, the failing task is not affected.
 """
+import hashlib
 import json
 import logging
-import subprocess
-import sys
 from typing import Tuple, Union
-from urllib.parse import quote, urljoin
+from urllib.parse import urljoin
 
 import requests
-from airflow.sdk import Variable
+from airflow.sdk import Connection, Variable
 
 LOG = logging.getLogger(__name__)
 if not LOG.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+
+ANALYZER_DAG_ID = "failure_analyzer"
+API_CONN_ID = "failure_responder_airflow_api"
+MAX_RUN_ID_LEN = 250
 
 
 def _derive_verify(tls_cfg: dict) -> Union[bool, str]:
@@ -75,48 +74,34 @@ def _acquire_token_or_raise(base_url: str, username: str, password: str, verify:
     return token
 
 
-def _get_current_try_number_via_api_v2(base_url: str, token: str, verify: Union[bool, str], timeouts: Tuple[float, float], dag_id: str, run_id: str, task_id: str) -> int:
-    base = base_url.rstrip("/")
-    headers = {"Authorization": f"Bearer {token}"}
-    url = (
-        f"{base}/api/v2/dags/{quote(dag_id, safe='')}"
-        f"/dagRuns/{quote(run_id, safe='')}"
-        f"/taskInstances/{quote(task_id, safe='')}"
-    )
-    LOG.info("[ti-meta] GET %s", url)
-    try:
-        r = requests.get(url, headers=headers, verify=verify, timeout=timeouts)
-    except Exception:
-        LOG.exception("[ti-meta] GET request failed")
-        raise
+def analyzer_run_id(dag_id: str, run_id: str, task_id: str, try_number: int) -> str:
+    rid = f"fail__{dag_id}__{run_id}__{task_id}__{try_number}"
+    if len(rid) <= MAX_RUN_ID_LEN:
+        return rid
+    # Keep a readable prefix; the hash of the full id keeps it unique and deterministic
+    digest = hashlib.sha256(rid.encode("utf-8")).hexdigest()[:12]
+    return f"{rid[:MAX_RUN_ID_LEN - 14]}__{digest}"
 
-    try:
-        r.raise_for_status()
-    except Exception:
-        LOG.error("[ti-meta] status=%s body=%s", r.status_code, (r.text or "")[:2000])
-        raise
 
-    try:
-        data = r.json()
-    except Exception:
-        LOG.error("[ti-meta] failed to parse JSON response; body=%s", (r.text or "")[:2000])
-        raise
+def load_api_access(conn_getter=Connection.get) -> Tuple[str, str, str]:
+    """(base_url, login, password) from the API Connection. Shared with the analyzer DAG."""
+    conn = conn_getter(API_CONN_ID)
+    base_url = (conn.host or "").rstrip("/")
+    if not base_url or not conn.login or not conn.password:
+        raise RuntimeError(f"Connection {API_CONN_ID} needs host (API base URL), login and password")
+    return base_url, conn.login, conn.password
 
-    try:
-        tn = int(data.get("try_number", 1))
-    except Exception:
-        LOG.error("[ti-meta] invalid try_number in response: %s", data.get("try_number"))
-        raise RuntimeError("invalid try_number in API response")
 
-    LOG.info("[ti-meta] state=%s api.try_number=%s max_tries=%s", data.get("state"), tn, data.get("max_tries"))
-    return tn
+def load_tls_timeouts() -> Tuple[Union[bool, str], Tuple[float, float]]:
+    try:
+        cfg = json.loads(Variable.get("v_callback_fetch_failed_task"))
+    except Exception:
+        LOG.warning("[cfg] v_callback_fetch_failed_task unreadable; using default tls/timeouts")
+        cfg = {}
+    return _derive_verify(cfg.get("tls") or {}), _http_timeout(cfg.get("timeouts") or {})
 
 
 def on_failure_trigger_fetcher(context):
-    """
-    Single-method on_failure_callback. Starts the responder script with
-    --log-url and identifiers in argv; token + reduced config go via stdin.
-    """
     ti = context.get("ti") or context.get("task_instance")
     if not ti:
         LOG.error("No task instance in callback context")
@@ -129,93 +114,31 @@ def on_failure_trigger_fetcher(context):
     if not run_id:
         LOG.error("No run_id/dag_run_id in context for %s.%s", dag_id, task_id)
         return
+    try_number = int(getattr(ti, "try_number", None) or 1)
 
-    # Load config JSON from Airflow Variable
     try:
-        cfg_raw = Variable.get("v_callback_fetch_failed_task")
-        cfg = json.loads(cfg_raw)
-    except Exception:
-        LOG.exception("Failed to load v_callback_fetch_failed_task Airflow Variable")
-        return
-
-    base_url = (cfg.get("api_base_url") or cfg.get("base_url") or "").rstrip("/")
-    if not base_url:
-        LOG.error("Config must include api_base_url or base_url")
-        return
-
-    auth_basic = (cfg.get("auth") or {}).get("basic") or {}
-    username = auth_basic.get("username")
-    password = auth_basic.get("password")
-    if not username or not password:
-        LOG.error("Config must include auth.basic.username and auth.basic.password")
-        return
-
-    verify = _derive_verify(cfg.get("tls") or {})
-    timeouts = _http_timeout(cfg.get("timeouts") or {})
-
-    # Local logging of task instance numbers (not authoritative)
-    ti_prop_try = getattr(ti, "try_number", None)
-    ti_raw_try = getattr(ti, "try_number_raw", None)
-    LOG.info("[ti] local: try_number=%s, try_number_raw=%s, state=%s", ti_prop_try, ti_raw_try, getattr(ti, "state", None))
-
-    # STEP 1: Acquire token (strict)
-    try:
+        base_url, username, password = load_api_access()
+        verify, timeouts = load_tls_timeouts()
         token = _acquire_token_or_raise(base_url, username, password, verify, timeouts)
     except Exception:
-        LOG.exception("Failed to acquire token from auth endpoint; aborting callback")
+        LOG.exception("[trigger] cannot authenticate to Airflow API; no analysis for %s.%s", dag_id, task_id)
         return
 
-    # STEP 2: Query API v2 for authoritative try_number using the token
+    body = {
+        "dag_run_id": analyzer_run_id(dag_id, run_id, task_id, try_number),
+        "logical_date": None,
+        "conf": {"dag_id": dag_id, "run_id": run_id, "task_id": task_id, "try_number": try_number},
+    }
+    url = f"{base_url}/api/v2/dags/{ANALYZER_DAG_ID}/dagRuns"
     try:
-        try_number_for_log = _get_current_try_number_via_api_v2(base_url, token, verify, timeouts, dag_id, run_id, task_id)
+        r = requests.post(url, json=body, headers={"Authorization": f"Bearer {token}"}, verify=verify, timeout=timeouts)
     except Exception:
-        LOG.exception("Failed to obtain try_number via API v2; aborting callback")
+        LOG.exception("[trigger] POST %s failed", url)
         return
 
-    # STEP 3: Build the logs endpoint URL (API v2 path)
-    log_url = (
-        f"{base_url}/api/v2/dags/{quote(dag_id, safe='')}"
-        f"/dagRuns/{quote(run_id, safe='')}"
-        f"/taskInstances/{quote(task_id, safe='')}"
-        f"/logs/{try_number_for_log}"
-    )
-
-    # responder script path (override allowed)
-    script_path = cfg.get("script_path") or "/usr/local/airflow/dags/airflow_failure_responder/airflow_failure_responder.py"
-
-    # Responder needs base_url (UI links) but never the Airflow credentials
-    reduced_cfg = {k: v for k, v in cfg.items() if k != "auth"}
-    stdin_payload = json.dumps({"token": token, "config": reduced_cfg})
-
-    # Invocation config (interpreter + mode)
-    invoke_cfg = cfg.get("invoke") or {}
-    python_exec = invoke_cfg.get("python") or sys.executable
-    mode = (invoke_cfg.get("mode") or "detach").lower()  # "detach" or "run"
-    timeout_sec = int(invoke_cfg.get("timeout_sec") or 30)
-
-    # Build command: non-secret identifiers only
-    cmd = [
-        python_exec,
-        script_path,
-        "--log-url", log_url,
-        "--dag-id", dag_id,
-        "--dag-run-id", run_id,
-        "--task-id", task_id,
-        "--try-number", str(try_number_for_log),
-    ]
-
-    # Safe logging only (do not print token or config)
-    LOG.info("[invoke] python=%s script=%s dag_id=%s run_id=%s task_id=%s try=%s", python_exec, script_path, dag_id, run_id, task_id, try_number_for_log)
-    LOG.info("[invoke] token_len=%d", len(token))
-
-    # Invoke
-    try:
-        if mode == "run":
-            subprocess.run(cmd, input=stdin_payload, text=True, check=False, timeout=timeout_sec)
-        else:
-            # detach, start new session; child reads stdin first, so the write does not block for long
-            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, text=True, start_new_session=True)
-            proc.stdin.write(stdin_payload)
-            proc.stdin.close()
-    except Exception:
-        LOG.exception("Failed to invoke failure responder script")
+    if r.status_code == 409:
+        LOG.info("[trigger] analyzer run %s already exists", body["dag_run_id"])
+    elif r.ok:
+        LOG.info("[trigger] analyzer run %s queued", body["dag_run_id"])
+    else:
+        LOG.error("[trigger] status=%s body=%s", r.status_code, (r.text or "")[:1000])

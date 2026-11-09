@@ -1,33 +1,17 @@
 # airflow_failure_responder.py
 """
-Responder entrypoint.
+Failure analysis, called by the failure_analyzer DAG task (dags/failure_analyzer.py).
 
-Expectations (per our agreed flow):
-  - trigger_failure_responder.py obtains JWT and constructs full log_url,
-    then invokes this script with:
-      argv:  --log-url <full-log-url> [--dag-id ... --dag-run-id ... --task-id ... --try-number ...]
-      stdin: {"token": "<jwt>", "config": {<reduced cfg>}}
-  - reduced cfg does NOT contain auth/basic credentials,
-    but may contain base_url, tls, timeouts, pagination, llm, output, knowledge, confluence, etc.
+  - The task gets a JWT and the full log_url, and fills secrets from Airflow Connections (apply_connections).
+  - Fetch log -> crop/redact -> optional Confluence sync + pgvector retrieval -> one LLM call -> output.
   - If fetching or LLM analysis fails, a fallback card (raw error line) is still sent.
-
-This script:
-  - Decodes config
-  - Fetches the log using airflow_log_client.fetch_log_using_token (runs in thread)
-  - Processes/log-window/redaction
-  - Optionally syncs Confluence rows into the pgvector KB (only new/changed rows are embedded)
-  - Retrieves similar KB rows and runs one LLM call (OpenAI-compatible endpoint, no agent framework)
-  - Outputs result according to cfg.output
 """
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import sys
 import time
-import argparse
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from logging_cfg import configure_logging, _mask
 from airflow_log_client import fetch_log_using_token, _derive_verify
@@ -42,29 +26,34 @@ configure_logging()
 LOG = logging.getLogger("airflow-failure-responder")
 
 
-async def main_async() -> None:
-    p = argparse.ArgumentParser(
-        description="Fetch a failed task's log (using provided token), parse/redact, analyze with LLM, and emit JSON."
-    )
-    p.add_argument("--log-url", required=True, help="Absolute Airflow v2 Logs endpoint for the failing attempt.")
-    # Optional identifiers (trigger may omit these)
-    p.add_argument("--dag-id", required=False, help="Optional DAG id (provided by trigger if available).")
-    p.add_argument("--dag-run-id", required=False, help="Optional DAG run id.")
-    p.add_argument("--task-id", required=False, help="Optional task id.")
-    p.add_argument("--try-number", required=False, type=int, help="Optional try number (int).")
+def apply_connections(cfg: Dict[str, Any], get_conn: Callable[[str], Any]) -> Dict[str, Any]:
+    """Fill secret config fields from Airflow Connections; a missing Connection leaves its subsystem unconfigured."""
+    api = get_conn("failure_responder_airflow_api")
+    if api is not None and api.host:
+        cfg["base_url"] = api.host.rstrip("/")
 
-    args = p.parse_args()
+    llm = get_conn("failure_responder_llm")
+    if llm is not None and llm.password:
+        cfg.setdefault("llm", {})["api_key"] = llm.password
+        # shortcut: embedder shares the LLM gateway key, add failure_responder_embedder if they ever differ
+        cfg.setdefault("knowledge", {}).setdefault("embedder", {})["api_key"] = llm.password
 
-    # Token + config come via stdin, never argv (argv is visible in `ps` and task logs)
-    try:
-        payload = json.loads(sys.stdin.read())
-        cfg = payload["config"]
-        token = payload["token"]
-    except Exception:
-        LOG.exception("Failed to read {token, config} JSON from stdin")
-        raise SystemExit("Invalid stdin payload")
+    db = get_conn("failure_responder_kb_db")
+    if db is not None:
+        cfg.setdefault("knowledge", {}).setdefault("vector_db", {})["db_url"] = db.get_uri()
 
-    LOG.info("[start] log_url=%s", args.log_url)
+    conf = get_conn("failure_responder_confluence")
+    if conf is not None and "confluence" in cfg:
+        cfg["confluence"]["auth"] = {"username": conf.login, "password": conf.password}
+
+    teams = get_conn("failure_responder_teams")
+    if teams is not None and teams.host:
+        cfg.setdefault("output", {})["teams_webhook"] = teams.host
+    return cfg
+
+
+async def run_analysis(cfg: Dict[str, Any], token: str, log_url: str, identifiers: Dict[str, Optional[Any]]) -> None:
+    LOG.info("[start] log_url=%s", log_url)
 
     # shortcut: global TLS bypass kept as opt-in for hosts without the internal CA; prefer tls.verify=<ca path>
     if (cfg.get("tls") or {}).get("insecure_global_patch"):
@@ -93,25 +82,20 @@ async def main_async() -> None:
     max_pages = int(pagination.get("max_pages", 200))
     max_bytes = int(pagination.get("max_bytes", 5_000_000))
 
-    # Validate token presence (trigger should supply)
-    if not token:
-        LOG.error("No token provided (trigger must pass it on stdin)")
-        raise SystemExit("Missing token")
-
     # 1) Fetch full log using token (run blocking requests in thread)
     t_fetch = time.time()
     try:
         # fetch_log_using_token(log_url, token, cfg=None, max_bytes=None)
         full_log = await asyncio.to_thread(
             fetch_log_using_token,
-            args.log_url,
+            log_url,
             token,
             cfg,  # reduced cfg may include tls/timeouts/max_bytes
             max_bytes=max_bytes,
         )
     except Exception:
         # Keep going: the team still gets a card even without the log
-        LOG.exception("[fetch] Failed to fetch log from %s", args.log_url)
+        LOG.exception("[fetch] Failed to fetch log from %s", log_url)
         full_log = ""
 
     LOG.info("[parse] full_log_len=%d (%.2fs)", len(full_log), time.time() - t_fetch)
@@ -138,13 +122,6 @@ async def main_async() -> None:
     except Exception:
         LOG.exception("[kb] Knowledge retrieval failed; analyzing without knowledge")
         docs = []
-
-    identifiers: Dict[str, Optional[Any]] = {
-        "dag_id": getattr(args, "dag_id", None),
-        "dag_run_id": getattr(args, "dag_run_id", None),
-        "task_id": getattr(args, "task_id", None),
-        "try_number": getattr(args, "try_number", None),
-    }
 
     # 5) Ask LLM for analysis
     try:
@@ -179,7 +156,7 @@ async def main_async() -> None:
         "dag_run_id": identifiers.get("dag_run_id"),
         "task_id": identifiers.get("task_id"),
         "try_number": identifiers.get("try_number"),
-        "log_url": args.log_url,
+        "log_url": log_url,
         "extracted": {
             "error_summary": analysis.get("error_summary", "Unknown error"),
             "processed_log_length": len(processed_log),
@@ -219,11 +196,4 @@ async def main_async() -> None:
 
     except Exception as e:
         LOG.exception("Failed to output analysis result")
-        raise SystemExit(f"Failed to output analysis result: {e}")
-
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main_async())
-    except KeyboardInterrupt:
-        sys.exit(130)
+        raise RuntimeError(f"Failed to output analysis result: {e}") from e
