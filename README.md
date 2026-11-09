@@ -41,6 +41,7 @@ flowchart TB
 5. **Analysis**: the model may first read Airflow context through read-only tools (task instance, redacted DAG source, last successful run, other failures in the run). The closest incident records go into the prompt as `K1..Kn`. The LLM returns a structured analysis and the IDs it used. The code maps those IDs back to real records, so a **matched incident** on the card can't be invented.
 6. **Alert card**: posted to a Teams Workflows (Power Automate) webhook.
 7. **Dedup**: failures with the same **fingerprint** (exception type + normalized message, across all DAGs) inside a 30-minute cooldown get no LLM call and no card. They are counted, and one **dedup summary** card follows when the cooldown ends.
+8. **Feedback**: the card's "📝 Geri bildirim ver" button opens an Airflow human-in-the-loop step (24 h): `Doğru` / `Kısmen` / `Yanlış` plus a note. The next analysis of the same fingerprint builds on a confirmed explanation and avoids a rejected one.
 
 ## What the alert card shows
 
@@ -110,7 +111,7 @@ Without `failure_responder_kb_db` and `confluence` the analysis runs from the ta
 ```text
 dags/
 ├── callbacks/trigger_failure_responder.py  # on_failure_callback: JWT, trigger failure_analyzer run
-├── failure_analyzer.py                     # analyzer DAG: Variable + Connections → run_analysis
+├── failure_analyzer.py                     # analyzer DAG: analyze → feedback (HITL) → record_feedback
 ├── kb_ingest.py                            # daily Confluence → knowledge base sync
 └── example.py                              # DAG that fails with a random realistic error
 airflow_failure_responder/                  # analysis code, imported by the analyzer task
@@ -123,6 +124,7 @@ airflow_failure_responder/                  # analysis code, imported by the ana
 ├── llm_agent.py                            # prompt, OpenAI-compatible call, matched-incident mapping
 ├── models.py                               # analysis JSON schema
 ├── output.py                               # alert card, dedup summary card, stdout, file
+├── feedback.py                             # stored analyses, HITL verdicts, past analysis for the prompt
 ├── dedup.py                                # fingerprint, cooldown window, summaries (Postgres)
 └── ssl_patch.py                            # opt-in global TLS bypass
 tests/                                      # pytest; pgvector test runs when PG_TEST_DSN is set
@@ -142,6 +144,3 @@ PG_TEST_DSN=postgresql://postgres:t@127.0.0.1:55432/postgres pytest tests
 
 For an end-to-end check, attach the callback, trigger `example_realistic_failures` and watch the Teams channel. The same error twice within 30 minutes is deduplicated; set `dedup.cooldown_minutes` to `0` while testing.
 
-## Roadmap
-
-- **Feedback**: an Airflow 3.1 HITL step records whether the analysis was right, and later analyses prefer confirmed incidents.
