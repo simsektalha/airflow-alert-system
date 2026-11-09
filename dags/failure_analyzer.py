@@ -11,17 +11,10 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
-from airflow.sdk import DAG, Connection, Variable, get_current_context, task
+from airflow.sdk import DAG, Variable, get_current_context, task
 
 # Responder modules use flat imports; they are deployed as dags/airflow_failure_responder/
 RESPONDER_DIR = str(Path(__file__).resolve().parent / "airflow_failure_responder")
-
-
-def _get_conn(conn_id):
-    try:
-        return Connection.get(conn_id)
-    except Exception:
-        return None
 
 
 with DAG(
@@ -43,14 +36,19 @@ with DAG(
             sys.path.insert(0, RESPONDER_DIR)
         # Imported here so DAG parsing does not load openai/psycopg
         from airflow_failure_responder import apply_connections, run_analysis
-        from callbacks.trigger_failure_responder import _acquire_token_or_raise, load_api_access, load_tls_timeouts
+        from callbacks.trigger_failure_responder import (
+            _acquire_token_or_raise,
+            get_conn_or_none,
+            load_api_access,
+            load_tls_timeouts,
+        )
 
         conf = get_current_context()["dag_run"].conf or {}
         ids = {k: conf.get(k) for k in ("dag_id", "run_id", "task_id", "try_number")}
         if not all(ids.values()):
             raise ValueError(f"conf needs dag_id, run_id, task_id, try_number; got {sorted(conf)}")
 
-        cfg = apply_connections(json.loads(Variable.get("v_callback_fetch_failed_task")), _get_conn)
+        cfg = apply_connections(json.loads(Variable.get("v_callback_fetch_failed_task")), get_conn_or_none)
         base_url, username, password = load_api_access()
         verify, timeouts = load_tls_timeouts()
         token = _acquire_token_or_raise(base_url, username, password, verify, timeouts)

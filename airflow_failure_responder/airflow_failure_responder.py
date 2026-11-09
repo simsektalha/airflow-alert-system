@@ -3,7 +3,8 @@
 Failure analysis, called by the failure_analyzer DAG task (dags/failure_analyzer.py).
 
   - The task gets a JWT and the full log_url, and fills secrets from Airflow Connections (apply_connections).
-  - Fetch log -> crop/redact -> optional Confluence sync + pgvector retrieval -> one LLM call -> output.
+  - Fetch log -> crop/redact -> pgvector retrieval -> one LLM call -> output.
+  - Confluence sync runs in the daily kb_ingest DAG, not here.
   - If fetching or LLM analysis fails, a fallback card (raw error line) is still sent.
 """
 from __future__ import annotations
@@ -16,7 +17,7 @@ from typing import Any, Callable, Dict, Optional
 from logging_cfg import configure_logging, _mask
 from airflow_log_client import fetch_log_using_token, _derive_verify
 from log_processing import crop_log_window, process_logs, last_error_line
-from knowledge import ingest_confluence, retrieve_knowledge
+from knowledge import retrieve_knowledge
 from llm_agent import build_llm_client, ask_llm_for_analysis
 from output import output_to_stdout, output_to_file, output_to_teams
 from ssl_patch import apply_insecure_ssl_patch
@@ -107,14 +108,7 @@ async def run_analysis(cfg: Dict[str, Any], token: str, log_url: str, identifier
     processed_log = process_logs(focused_log, max_chars=50_000)
     LOG.info("[parse] processed_log_len=%d", len(processed_log))
 
-    # 4) Knowledge base: sync Confluence (cheap when unchanged), then retrieve similar rows
-    # shortcut: sync runs per failure until the daily kb_ingest DAG exists (PR2)
-    if cfg.get("confluence"):
-        try:
-            ingest_confluence(cfg, verify)
-        except Exception:
-            LOG.exception("[kb] Confluence sync failed; using existing KB rows")
-
+    # 4) Knowledge base: retrieve similar rows (the daily kb_ingest DAG keeps them in sync)
     try:
         # Embed the error-focused tail, not the whole 50k window
         query = (last_error_line(processed_log) + "\n" + processed_log[-3000:]).strip()

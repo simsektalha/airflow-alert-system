@@ -16,16 +16,17 @@ flowchart TB
 
     subgraph responder["failure_analyzer DAG · analyze task"]
         fetch["1 · Fetch task log"] --> crop["2 · Crop to error window, redact secrets"]
-        crop --> sync["3 · Sync incident records"]
-        sync --> find["4 · Find similar incident records"]
-        find --> llm["5 · One LLM call → JSON-schema analysis"]
-        llm --> map["6 · Keep only matched incidents that exist"]
-        map --> card["7 · Build alert card"]
+        crop --> find["3 · Find similar incident records"]
+        find --> llm["4 · One LLM call → JSON-schema analysis"]
+        llm --> map["5 · Keep only matched incidents that exist"]
+        map --> card["6 · Build alert card"]
     end
 
+    ingest["kb_ingest DAG<br/>daily"]
+
     fetch -. "GET /logs/:try" .-> api
-    conf["Confluence incident table"] -. "new / changed rows" .-> sync
-    sync -. "embed + upsert" .-> kb[("Knowledge base<br/>Postgres + pgvector")]
+    conf["Confluence incident table"] -. "new / changed rows" .-> ingest
+    ingest -. "embed + upsert" .-> kb[("Knowledge base<br/>Postgres + pgvector")]
     find -. "cosine top-k" .-> kb
     llm -. "OpenAI-compatible API" .-> gw["LLM gateway<br/>vLLM · LiteLLM · Ollama"]
     card --> teams["Microsoft Teams"]
@@ -35,7 +36,7 @@ flowchart TB
 1. **Callback** (runs inside the failed task's worker): gets a JWT from `/auth/token` and triggers one `failure_analyzer` DAG run. The run's `conf` holds only the DAG, run, task and try number. The run id is fixed per failed try, so a repeated callback does not analyze twice.
 2. **Analyzer task**: reads the Variable for settings and Airflow Connections for secrets, gets its own JWT, and runs the steps below. It has Airflow retries and shows up in the Airflow UI.
 3. **Task log**: fetched from `/api/v2/.../logs/{try}`, cropped to the window around the error, then secrets (passwords, tokens, connection strings, emails, keys) are redacted.
-4. **Knowledge base**: rows of the Confluence incident table are stored in Postgres + pgvector. Only new or changed rows are embedded; rows removed from the page are deleted.
+4. **Knowledge base**: the daily `kb_ingest` DAG stores the rows of the Confluence incident table in Postgres + pgvector. Only new or changed rows are embedded; rows removed from the page are deleted. The analyzer only reads it, so a Confluence outage never delays an alert.
 5. **Analysis**: the closest incident records go into the prompt as `K1..Kn`. The LLM returns a structured analysis and the IDs it used. The code maps those IDs back to real records, so a **matched incident** on the card can't be invented.
 6. **Alert card**: posted to a Teams Workflows (Power Automate) webhook.
 
@@ -61,11 +62,11 @@ Card text and the LLM prompt are in Turkish.
 ```bash
 cp -r airflow_failure_responder /path/to/airflow/dags/
 cp dags/callbacks/trigger_failure_responder.py /path/to/airflow/dags/callbacks/
-cp dags/failure_analyzer.py /path/to/airflow/dags/
+cp dags/failure_analyzer.py dags/kb_ingest.py /path/to/airflow/dags/
 pip install -r requirements.txt   # in the worker image
 ```
 
-Unpause `failure_analyzer` (new DAGs start paused).
+Unpause `failure_analyzer` and `kb_ingest` (new DAGs start paused), then trigger `kb_ingest` once so the knowledge base is filled before the first failure.
 
 **2. Create the Connections** (secrets never go in the Variable; details in [docs/CONFIGURATION.md](docs/CONFIGURATION.md#connections)):
 
@@ -108,6 +109,7 @@ Without `failure_responder_kb_db` and `confluence` the analysis runs from the ta
 dags/
 ├── callbacks/trigger_failure_responder.py  # on_failure_callback: JWT, trigger failure_analyzer run
 ├── failure_analyzer.py                     # analyzer DAG: Variable + Connections → run_analysis
+├── kb_ingest.py                            # daily Confluence → knowledge base sync
 └── example.py                              # DAG that fails with a random realistic error
 airflow_failure_responder/                  # analysis code, imported by the analyzer task
 ├── airflow_failure_responder.py            # run_analysis: fetch → crop/redact → knowledge → LLM → output
@@ -138,7 +140,6 @@ For an end-to-end check, attach the callback, trigger `example_realistic_failure
 
 ## Roadmap
 
-- **Daily `kb_ingest` DAG**: Confluence sync moves out of the per-failure path.
 - **Dedup**: one alert card per root-cause fingerprint within a cooldown, followed by a "N tasks affected" summary.
 - **Airflow context tools**: the LLM can read the task instance, the DAG source (redacted), the last successful run and other failures in the same run.
 - **Feedback**: an Airflow 3.1 HITL step records whether the analysis was right, and later analyses prefer confirmed incidents.
