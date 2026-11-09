@@ -19,7 +19,8 @@ from airflow_log_client import fetch_log_using_token, _derive_verify
 from log_processing import crop_log_window, process_logs, last_error_line
 from knowledge import retrieve_knowledge
 from llm_agent import build_llm_client, ask_llm_for_analysis
-from output import output_to_stdout, output_to_file, output_to_teams
+from output import output_to_stdout, output_to_file, output_to_teams, output_summary
+from dedup import claim_failure, flush_summaries
 from ssl_patch import apply_insecure_ssl_patch
 
 configure_logging()
@@ -107,6 +108,23 @@ async def run_analysis(cfg: Dict[str, Any], token: str, log_url: str, identifier
     # 3) Redaction + truncation
     processed_log = process_logs(focused_log, max_chars=50_000)
     LOG.info("[parse] processed_log_len=%d", len(processed_log))
+
+    # 3b) Dedup: send due "N tasks affected" summaries, then suppress this failure if its fingerprint is in cooldown
+    try:
+        flush_summaries(cfg, lambda summary: output_summary(cfg, summary))
+        entry = {
+            "dag_id": identifiers.get("dag_id"),
+            "task_id": identifiers.get("task_id"),
+            "run_id": identifiers.get("dag_run_id"),
+            "try_number": identifiers.get("try_number"),
+        }
+        suppressed, fp = claim_failure(cfg, last_error_line(processed_log), entry)
+        if suppressed:
+            LOG.info("[dedup] suppressed: fp=%s already alerted within cooldown", fp[:12])
+            return
+    except Exception:
+        # Dedup is an optimization; a broken dedup store must never cost an alert
+        LOG.exception("[dedup] failed; analyzing without dedup")
 
     # 4) Knowledge base: retrieve similar rows (the daily kb_ingest DAG keeps them in sync)
     try:

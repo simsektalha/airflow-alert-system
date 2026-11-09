@@ -39,6 +39,7 @@ flowchart TB
 4. **Knowledge base**: the daily `kb_ingest` DAG stores the rows of the Confluence incident table in Postgres + pgvector. Only new or changed rows are embedded; rows removed from the page are deleted. The analyzer only reads it, so a Confluence outage never delays an alert.
 5. **Analysis**: the closest incident records go into the prompt as `K1..Kn`. The LLM returns a structured analysis and the IDs it used. The code maps those IDs back to real records, so a **matched incident** on the card can't be invented.
 6. **Alert card**: posted to a Teams Workflows (Power Automate) webhook.
+7. **Dedup**: failures with the same **fingerprint** (exception type + normalized message, across all DAGs) inside a 30-minute cooldown get no LLM call and no card. They are counted, and one **dedup summary** card follows when the cooldown ends.
 
 ## What the alert card shows
 
@@ -119,7 +120,8 @@ airflow_failure_responder/                  # analysis code, imported by the ana
 ├── knowledge.py                            # Confluence parse + sync, embeddings, pgvector search
 ├── llm_agent.py                            # prompt, OpenAI-compatible call, matched-incident mapping
 ├── models.py                               # analysis JSON schema
-├── output.py                               # alert card, stdout, file
+├── output.py                               # alert card, dedup summary card, stdout, file
+├── dedup.py                                # fingerprint, cooldown window, summaries (Postgres)
 └── ssl_patch.py                            # opt-in global TLS bypass
 tests/                                      # pytest; pgvector test runs when PG_TEST_DSN is set
 GLOSSARY.md                                 # domain terms
@@ -136,10 +138,9 @@ podman run -d --rm --name kbtest -e POSTGRES_PASSWORD=t -p 55432:5432 docker.io/
 PG_TEST_DSN=postgresql://postgres:t@127.0.0.1:55432/postgres pytest tests
 ```
 
-For an end-to-end check, attach the callback, trigger `example_realistic_failures` and watch the Teams channel.
+For an end-to-end check, attach the callback, trigger `example_realistic_failures` and watch the Teams channel. The same error twice within 30 minutes is deduplicated; set `dedup.cooldown_minutes` to `0` while testing.
 
 ## Roadmap
 
-- **Dedup**: one alert card per root-cause fingerprint within a cooldown, followed by a "N tasks affected" summary.
 - **Airflow context tools**: the LLM can read the task instance, the DAG source (redacted), the last successful run and other failures in the same run.
 - **Feedback**: an Airflow 3.1 HITL step records whether the analysis was right, and later analyses prefer confirmed incidents.
