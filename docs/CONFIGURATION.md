@@ -49,6 +49,8 @@ A missing optional Connection leaves that part unconfigured (no LLM → fallback
     "page_url": "https://confluence.example.com/x/AbCd"
   },
 
+  "dedup": { "cooldown_minutes": 30 },
+
   "output": {
     "method": "teams",
     "teams_verify_ssl": true
@@ -133,6 +135,19 @@ Sync runs in the `kb_ingest` DAG (`@daily`, `retries=2`, one run at a time), not
 | `output.file_path` | `/tmp/failed_task_log.json` | For `file`. |
 | `output.teams_webhook` | (none) | From `failure_responder_teams`. Teams Workflows (Power Automate) webhook URL. Falls back to stdout if missing. |
 | `output.teams_verify_ssl` | `true` | Set `false` only behind a TLS-inspecting proxy without its CA. |
+
+## Dedup
+
+One alert card per **fingerprint** within a cooldown. The fingerprint is global (the DAG is not part of it), so one broken database that fails 40 tasks in different DAGs gives one alert card and one summary.
+
+| Key | Default | Notes |
+|---|---|---|
+| `dedup.cooldown_minutes` | `30` | `0` turns dedup off. Dedup is also off without `failure_responder_kb_db`; its state is the `failure_dedup` table in the same database. |
+
+- **Fingerprint**: exception type + message from the last error line of the redacted task log. In the message, UUIDs, timestamps, IPs (with port), hex ids (8+ chars) and other numbers are replaced, whitespace is collapsed and case is ignored. Quoted names and paths are kept, so `No module named 'x'` and `'y'` stay different. Without an exception type the whole line is used. A log with no error line is never deduplicated.
+- The first failure of a fingerprint gets the normal analysis and opens the window. Later failures in the window get no LLM call and no card; they are counted (the first 20 are listed).
+- After the window, one **dedup summary** card ("🔁 Aynı hata: N task daha etkilendi") is sent by the next analyzer run of any failure, or at the latest by the daily `kb_ingest` run. If the send fails, the counts are kept and the next run tries again.
+- A broken dedup store never costs an alert: the failure is analyzed as if dedup were off.
 
 ## failure_analyzer DAG
 

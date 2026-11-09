@@ -248,7 +248,11 @@ def output_to_teams(result: Dict[str, Any], webhook_url: str, verify_ssl: bool =
     """
 
     card = _build_adaptive_card(result, base_url, confluence_url)
+    text = f"Airflow failure: {result.get('dag_id')} / {result.get('task_id')} - {result.get('analysis', {}).get('error_summary', '')}"
+    _post_card(card, text, webhook_url, verify_ssl)
 
+
+def _post_card(card: Dict[str, Any], text: str, webhook_url: str, verify_ssl: bool) -> None:
     # The Teams incoming webhook expects a top-level JSON with attachments:
     payload = {
         "type": "message",
@@ -260,7 +264,7 @@ def output_to_teams(result: Dict[str, Any], webhook_url: str, verify_ssl: bool =
             }
         ],
         # fallback text for older/unsupported clients
-        "text": f"Airflow failure: {result.get('dag_id')} / {result.get('task_id')} - {result.get('analysis', {}).get('error_summary', '')}"
+        "text": text
     }
 
     headers = {"Content-Type": "application/json"}
@@ -306,3 +310,37 @@ def output_to_file(result: Dict[str, Any], file_path: str) -> None:
     except Exception as e:
         LOG.error(f"[file] Failed to write to file {file_path}: {e}")
         raise
+
+
+def _build_summary_card(summary: Dict[str, Any]) -> Dict[str, Any]:
+    affected = summary.get("affected") or []
+    lines = [f"- {a.get('dag_id')}.{a.get('task_id')} ({a.get('run_id')})" for a in affected]
+    more = summary["count"] - len(affected)
+    if more > 0:
+        lines.append(f"- ... ve {more} task daha")
+    body = [
+        {"type": "TextBlock", "text": f"🔁 Aynı hata: {summary['count']} task daha etkilendi", "weight": "Bolder", "size": "Large", "wrap": True},
+        {"type": "TextBlock", "text": _shorten(summary.get("title") or "", 300), "wrap": True, "fontType": "Monospace", "spacing": "Small"},
+        {"type": "TextBlock", "text": f"{summary.get('window_start')} → {summary.get('last_seen')}", "isSubtle": True, "spacing": "Small", "wrap": True},
+        {"type": "TextBlock", "text": "\n".join(lines), "wrap": True, "spacing": "Medium"},
+    ]
+    return {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "type": "AdaptiveCard",
+        "version": "1.4",
+        "body": body,
+        "msteams": {"width": "Full"},
+    }
+
+
+def output_summary(cfg: Dict[str, Any], summary: Dict[str, Any]) -> None:
+    """Send a dedup "N tasks affected" summary with the configured output method; raises on failure."""
+    out = cfg.get("output") or {}
+    method = out.get("method", "stdout")
+    if method == "teams" and out.get("teams_webhook"):
+        card = _build_summary_card(summary)
+        _post_card(card, f"Aynı hata: {summary['count']} task daha etkilendi", out["teams_webhook"], out.get("teams_verify_ssl", True))
+    elif method == "file":
+        output_to_file({"dedup_summary": summary}, out.get("file_path") or "/tmp/failed_task_log.json")
+    else:
+        output_to_stdout({"dedup_summary": summary})

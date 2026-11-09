@@ -1,5 +1,7 @@
 """
 kb_ingest: daily Confluence incident table -> pgvector knowledge base sync.
+Also sends due dedup "N tasks affected" summaries, so they go out within a day even
+when no new failure triggers the analyzer.
 
 Only new or changed rows are embedded; an empty page parse keeps the stored rows.
 The failure_analyzer only queries the knowledge base, so a failed sync means stale
@@ -32,7 +34,9 @@ with DAG(
         from airflow_failure_responder import apply_connections
         from airflow_log_client import _derive_verify
         from callbacks.trigger_failure_responder import get_conn_or_none
+        from dedup import flush_summaries
         from knowledge import ingest_confluence
+        from output import output_summary
 
         cfg = apply_connections(json.loads(Variable.get("v_callback_fetch_failed_task")), get_conn_or_none)
         if (cfg.get("tls") or {}).get("insecure_global_patch"):
@@ -40,6 +44,7 @@ with DAG(
 
             apply_insecure_ssl_patch()
         # Fetch/embed/DB errors raise so the task fails and retries; missing config only logs a skip
-        return ingest_confluence(cfg, _derive_verify(cfg.get("tls") or {}))
+        pages = ingest_confluence(cfg, _derive_verify(cfg.get("tls") or {}))
+        return {"pages": pages, "dedup_summaries_sent": flush_summaries(cfg, lambda s: output_summary(cfg, s))}
 
     sync_confluence()

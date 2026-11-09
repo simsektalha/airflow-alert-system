@@ -42,6 +42,14 @@ _Avoid_: Reason, error message
 The Teams message that carries an analysis for one failure.
 _Avoid_: Notification, message, card
 
+**Fingerprint**:
+Exception type plus the error message with volatile parts (ids, numbers, timestamps, IPs) removed. Failures with the same fingerprint share a root cause, whatever DAG they are in.
+_Avoid_: Hash, error key, signature
+
+**Dedup summary**:
+The alert card sent after a cooldown, saying how many more failures had the same fingerprint and which tasks they were.
+_Avoid_: Digest, rollup, N-tasks card
+
 **Fallback alert**:
 An alert card sent without an analysis, carrying only the last error line, so a failure is never silent.
 _Avoid_: Error card, empty alert
